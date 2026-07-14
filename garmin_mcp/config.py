@@ -31,6 +31,7 @@ class Config:
     db_path: Path
     min_request_interval_seconds: float
     max_retries: int
+    alert_email_to: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -43,6 +44,7 @@ class Config:
                 os.environ.get("GARMIN_MIN_REQUEST_INTERVAL_SECONDS", "1.5")
             ),
             max_retries=int(os.environ.get("GARMIN_MAX_RETRIES", "5")),
+            alert_email_to=os.environ.get("ALERT_EMAIL_TO") or None,
         )
 
 

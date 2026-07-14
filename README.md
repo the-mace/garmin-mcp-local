@@ -95,7 +95,7 @@ fetched vs. what's stale or failed.
 ## Scheduling (launchd)
 
 `sync` and `backfill` only run when invoked -- to run them automatically,
-two `launchd` LaunchAgents are provided under `launchd/`:
+three `launchd` LaunchAgents are provided under `launchd/`:
 
 - `local.garmin-mcp.sync` -- daily at 06:00, incremental catch-up.
 - `local.garmin-mcp.backfill` -- daily at 06:30 (staggered 30 min after
@@ -104,6 +104,8 @@ two `launchd` LaunchAgents are provided under `launchd/`:
   excluded by default since a CSV-export seed already covers full activity
   history -- edit the plist's `--category` flags to include it if you
   didn't seed from a CSV export).
+- `local.garmin-mcp.watchdog` -- daily at 08:00 and 20:00, catches a
+  scheduled run that failed silently (see "Failure alerting" below).
 
 `launchd` requires literal absolute paths (no `~` expansion, no env vars),
 so the plists in `launchd/` are templates with a `__REPO_ROOT__`
@@ -113,17 +115,18 @@ the template in place:
 
 ```bash
 REPO_ROOT="$(pwd)"
-for job in sync backfill; do
+for job in sync backfill watchdog; do
     sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
         "launchd/local.garmin-mcp.$job.plist" \
         > ~/Library/LaunchAgents/"local.garmin-mcp.$job.plist"
 done
 launchctl load ~/Library/LaunchAgents/local.garmin-mcp.sync.plist
 launchctl load ~/Library/LaunchAgents/local.garmin-mcp.backfill.plist
+launchctl load ~/Library/LaunchAgents/local.garmin-mcp.watchdog.plist
 ```
 
 Logs land in `logs/sync.log` / `logs/sync.error.log` (and the `backfill`
-equivalents). Trigger a run immediately (e.g. to test) with:
+and `watchdog` equivalents). Trigger a run immediately (e.g. to test) with:
 
 ```bash
 launchctl start local.garmin-mcp.sync
@@ -133,6 +136,44 @@ Because the generated files in `~/Library/LaunchAgents/` are a one-time
 copy (not a symlink back to the template), re-run the `sed` step above and
 `launchctl unload`/`load` again after editing a template in `launchd/` for
 the change to take effect.
+
+### Failure alerting
+
+A scheduled job can fail silently two different ways: it can crash (or
+never run at all -- disabled agent, sleeping laptop at 06:00), or it can
+exit 0 while a per-date fetch failed internally and got logged to
+`sync_log` as `status='partial'`/`'failed'`/`'rate_limited'` without
+raising (see `garmin_mcp/sync/engine.py` -- one bad date is swallowed
+rather than aborting the whole batch). Neither shows up unless something
+reads the logs.
+
+Set `ALERT_EMAIL_TO` in `.env` to get an email for either case, sent via
+the local `mail` command (this machine already relays outbound mail
+through Postfix to a real SMTP provider -- confirm `echo test | mail -s
+test you@example.com` reaches your inbox before relying on this). This is
+deliberately *not* a hosted heartbeat/uptime service: nothing pings out on
+a normal successful day, so there's no regular outbound signal revealing
+when this machine is online. The only network traffic this ever generates
+is the alert itself, sent only when there's actually something to report.
+
+- `garmin-mcp-sync` / `garmin-mcp-backfill` email immediately on any
+  unhandled exception (login failure, DB error, etc.), then re-raise --
+  the real exit code and traceback still land in `logs/*.error.log`
+  exactly as before, alerting never masks it.
+- `garmin-mcp-watchdog` (the third launchd job above) is what catches the
+  other two failure modes -- a job that never ran, or one that ran but
+  logged `partial`/`failed`/`rate_limited`. It reads `sync_log` for the
+  most recent run per category and per `run_type`, and emails one summary
+  if anything's stale (>27h old, one day of slack over the daily cadence)
+  or unsuccessful. It sends nothing when everything's healthy.
+
+Leaving `ALERT_EMAIL_TO` unset disables alerting entirely (failures are
+still visible in `logs/*.error.log` and `sync_log`, just not pushed to
+you). Note the watchdog job has the same "did launchd even run this"
+blind spot as the jobs it's watching -- there's no way to fully close that
+loop with a local-only design, which is the tradeoff for not running a
+regular external heartbeat. Scheduling it twice a day (08:00 and 20:00)
+mitigates but doesn't eliminate this.
 
 ### macOS Documents-folder permission (if the project lives under `~/Documents`)
 

@@ -20,6 +20,7 @@ garmin-mcp-init-db = "garmin_mcp.scripts.init_db:main"
 garmin-mcp-import-export = "garmin_mcp.scripts.import_export:main"
 garmin-mcp-backfill = "garmin_mcp.scripts.backfill:main"
 garmin-mcp-sync = "garmin_mcp.scripts.sync:main"
+garmin-mcp-watchdog = "garmin_mcp.scripts.watchdog:main"
 garmin-mcp-server = "garmin_mcp.mcp_server.server:main"
 
 [build-system]

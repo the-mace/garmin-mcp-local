@@ -11,8 +11,10 @@ from __future__ import annotations
 
 import argparse
 import sys
+import traceback
 from datetime import date
 
+from garmin_mcp.alerting import send_alert_email
 from garmin_mcp.config import get_config
 from garmin_mcp.db.connection import init_db
 from garmin_mcp.garmin_client.factory import build_client
@@ -21,6 +23,17 @@ from garmin_mcp.sync.runner import run_backfill
 
 
 def main() -> None:
+    try:
+        _run()
+    except Exception:
+        send_alert_email(
+            subject="garmin-mcp-local: backfill FAILED",
+            body=f"garmin-mcp-backfill crashed with an unhandled exception:\n\n{traceback.format_exc()}",
+        )
+        raise
+
+
+def _run() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--batch-days", type=int, default=30)
     parser.add_argument("--earliest-date", type=str, default="2000-01-01")

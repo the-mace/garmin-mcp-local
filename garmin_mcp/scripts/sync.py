@@ -8,7 +8,9 @@ Usage:
 from __future__ import annotations
 
 import sys
+import traceback
 
+from garmin_mcp.alerting import send_alert_email
 from garmin_mcp.config import get_config
 from garmin_mcp.db.connection import init_db
 from garmin_mcp.garmin_client.factory import build_client
@@ -17,6 +19,17 @@ from garmin_mcp.sync.runner import run_sync
 
 
 def main() -> None:
+    try:
+        _run()
+    except Exception:
+        send_alert_email(
+            subject="garmin-mcp-local: sync FAILED",
+            body=f"garmin-mcp-sync crashed with an unhandled exception:\n\n{traceback.format_exc()}",
+        )
+        raise
+
+
+def _run() -> None:
     config = get_config()
     conn = init_db(config.db_path)
     # Only prompt for an MFA code if there's actually a terminal attached

@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.garmin-mcp.watchdog</string>
+
+    <!-- Invokes the venv binary directly: macOS's Documents-folder TCC
+         grant lives on the python3.12 binary itself (see the "Scheduling"
+         section of the README), so no app-bundle wrapper is needed --
+         python3.12 carries its own permission regardless of what invokes
+         it. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO_ROOT__/.venv/bin/garmin-mcp-watchdog</string>
+    </array>
+
+    <!-- No WorkingDirectory: config resolves all paths independent of cwd
+         (see garmin_mcp/config.py), and setting one isn't needed now that
+         nothing here goes through /bin/bash. -->
+
+    <!-- Twice daily, well after the 06:00/06:30 sync+backfill jobs should
+         have completed. Two firings (rather than one) give launchd two
+         chances to catch a missed run if the Mac was asleep through one of
+         them -- this job checks sync_log, it doesn't do any of the actual
+         work, so running it twice is cheap and harmless. -->
+    <key>StartCalendarInterval</key>
+    <array>
+        <dict>
+            <key>Hour</key>
+            <integer>8</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+        <dict>
+            <key>Hour</key>
+            <integer>20</integer>
+            <key>Minute</key>
+            <integer>0</integer>
+        </dict>
+    </array>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_ROOT__/logs/watchdog.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO_ROOT__/logs/watchdog.error.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
