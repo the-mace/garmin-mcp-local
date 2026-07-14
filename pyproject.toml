@@ -1,0 +1,33 @@
+[project]
+name = "garmin-mcp-local"
+version = "0.1.0"
+description = "Personal Garmin Connect MCP server with local SQLite cache, resumable backfill, and rate-limited sync"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "garminconnect>=0.3.6",
+    "mcp>=1.28.1",
+    "python-dotenv>=1.0.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[project.scripts]
+garmin-mcp-init-db = "garmin_mcp.scripts.init_db:main"
+garmin-mcp-import-export = "garmin_mcp.scripts.import_export:main"
+garmin-mcp-backfill = "garmin_mcp.scripts.backfill:main"
+garmin-mcp-sync = "garmin_mcp.scripts.sync:main"
+garmin-mcp-server = "garmin_mcp.mcp_server.server:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["garmin_mcp*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

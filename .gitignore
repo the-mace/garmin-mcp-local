@@ -1,0 +1,40 @@
+# Secrets / credentials
+.env
+.env.*
+!.env.example
+
+# Garmin token cache (garth session dir)
+.garminconnect/
+garth_session/
+token_cache/
+
+# Local SQLite cache and any personal data
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/
+
+# Raw Garmin bulk export archives / extracted dumps (personal data)
+*export*.zip
+garmin_export/
+exports/
+
+# Runtime logs from scheduled sync/backfill jobs (may include activity
+# names, dates, etc.)
+logs/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+
+# Editors / OS
+.DS_Store
+.vscode/
+.idea/

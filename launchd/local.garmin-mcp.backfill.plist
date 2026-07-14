@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.garmin-mcp.backfill</string>
+
+    <!-- Invokes the venv binary directly: macOS's Documents-folder TCC
+         grant lives on the python3.12 binary itself (see the "Scheduling"
+         section of the README), so no app-bundle wrapper is needed --
+         python3.12 carries its own permission regardless of what invokes
+         it. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>__REPO_ROOT__/.venv/bin/garmin-mcp-backfill</string>
+        <string>--batch-days</string>
+        <string>30</string>
+        <string>--earliest-date</string>
+        <!-- Generic lower bound, not this account's actual creation date --
+             backfill_batch naturally stops being useful (empty responses)
+             once it walks past when the account actually started, so an
+             exact value isn't needed here. Tighten it if you want backfill
+             to finish sooner. -->
+        <string>2000-01-01</string>
+        <!-- activities excluded: the CSV export already covers full activity
+             history for this account, so backfilling it would just re-walk
+             already-known activities via wasted API calls. -->
+        <string>--category</string><string>daily_health_metrics</string>
+        <string>--category</string><string>sleep</string>
+        <string>--category</string><string>hrv_daily</string>
+        <string>--category</string><string>training_readiness</string>
+        <string>--category</string><string>training_status</string>
+        <string>--category</string><string>race_predictions</string>
+        <string>--category</string><string>body_composition</string>
+    </array>
+
+    <!-- No WorkingDirectory: config resolves all paths independent of cwd
+         (see garmin_mcp/config.py), and setting one isn't needed now that
+         nothing here goes through /bin/bash. -->
+
+    <!-- Once daily at 06:30 local time -- 30 minutes after the sync job so
+         the two never write to the SQLite DB concurrently. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>6</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>__REPO_ROOT__/logs/backfill.log</string>
+    <key>StandardErrorPath</key>
+    <string>__REPO_ROOT__/logs/backfill.error.log</string>
+
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
