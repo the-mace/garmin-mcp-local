@@ -1,37 +1,75 @@
-name: dependabot-auto-merge
+# After CI passes on a Dependabot PR, approve and squash-merge it.
+# Human PRs are left alone — branch protection requires 1 review for those.
+# Only dependabot[bot] PRs are approved/merged here (including major bumps).
+#
+# Repo settings this relies on:
+# - Actions → Workflow permissions → "Allow GitHub Actions to create and
+#   approve pull requests" (can_approve_pull_request_reviews)
+# - Branch protection: 1 approving review + required check "test"
+name: Dependabot auto-merge
 
-on: pull_request
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
 
 permissions:
   contents: write
   pull-requests: write
+  actions: read
 
 jobs:
   dependabot:
     runs-on: ubuntu-latest
-    if: github.actor == 'dependabot[bot]'
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'pull_request'
     steps:
-      - name: Fetch Dependabot metadata
-        id: metadata
-        uses: dependabot/fetch-metadata@v2
-        with:
-          github-token: "${{ secrets.GITHUB_TOKEN }}"
-
-      # Major version bumps can carry breaking changes -- leave those for
-      # manual review rather than merging unattended. Patch/minor updates
-      # (and any security-only advisory) are low-risk enough to auto-apply
-      # once the test suite (see tests.yml, required via branch protection)
-      # has passed.
-      - name: Approve patch/minor updates
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
-        run: gh pr review --approve "$PR_URL"
+      - name: Find Dependabot PR for this commit
+        id: pr
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          pr_json=$(gh api "repos/${REPO}/commits/${SHA}/pulls" \
+            --jq '[.[] | select(.user.login == "dependabot[bot]")] | .[0] // empty')
+          if [ -z "$pr_json" ]; then
+            echo "No Dependabot PR for ${SHA}; nothing to merge."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          number=$(printf '%s' "$pr_json" | jq -r .number)
+          url=$(printf '%s' "$pr_json" | jq -r .html_url)
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "number=${number}" >> "$GITHUB_OUTPUT"
+          echo "url=${url}" >> "$GITHUB_OUTPUT"
+          echo "Dependabot PR #${number}: ${url}"
 
-      - name: Enable auto-merge for patch/minor updates
-        if: steps.metadata.outputs.update-type != 'version-update:semver-major'
-        run: gh pr merge --auto --squash "$PR_URL"
+      - name: Approve PR
+        if: steps.pr.outputs.skip != 'true'
+        run: |
+          if ! gh pr review --approve "$PR_URL"; then
+            echo "::error::Could not approve. Check Actions → Workflow permissions → Allow GitHub Actions to create and approve pull requests."
+            exit 1
+          fi
         env:
-          PR_URL: ${{ github.event.pull_request.html_url }}
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Squash-merge
+        if: steps.pr.outputs.skip != 'true'
+        run: |
+          if gh pr merge --squash --delete-branch "$PR_URL"; then
+            echo "Merged."
+            exit 0
+          fi
+          echo "Immediate merge failed; enabling auto-merge..."
+          if gh pr merge --squash --auto --delete-branch "$PR_URL"; then
+            echo "Auto-merge enabled."
+            exit 0
+          fi
+          echo "Could not merge or enable auto-merge (already merged, conflict, or protection)."
+        env:
+          PR_URL: ${{ steps.pr.outputs.url }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
