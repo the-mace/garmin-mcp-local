@@ -73,6 +73,14 @@ Pulls everything new since the last successful sync, for every category.
 This is **never** triggered automatically by a query -- run it explicitly,
 or wire it into a cron job / the MCP `sync_now` tool.
 
+**Empty-day gap walk-back:** if the phone/watch failed to upload for a few
+days, the API can return empty payloads and the forward cursor still advances.
+When Connect later gets those nights, a tip-only sync would miss them.
+Incremental sync therefore walks **backward from the cursor through
+consecutive local gaps** (missing row or null shell) until it hits a day
+with real metrics, capped at 21 days (`GAP_REFETCH_MAX_DAYS`), then
+re-fetches that range through today.
+
 Every API call in this project goes through one rate-limited wrapper
 (`garmin_mcp/garmin_client/rate_limiter.py`) that:
 - enforces a minimum delay between requests (`GARMIN_MIN_REQUEST_INTERVAL_SECONDS`),

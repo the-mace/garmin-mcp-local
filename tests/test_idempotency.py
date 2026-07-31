@@ -18,7 +18,13 @@ from garmin_mcp.bulk_import.runner import import_export
 from garmin_mcp.db.connection import init_db, upsert
 from garmin_mcp.sync.cursor import get_cursor, set_cursor
 from garmin_mcp.sync.daily_categories import DailyCategorySpec
-from garmin_mcp.sync.engine import date_range, sync_daily_category
+from garmin_mcp.sync.engine import (
+    date_range,
+    day_has_filled_data,
+    gap_refetch_start,
+    incremental_sync,
+    sync_daily_category,
+)
 
 
 # ---------------------------------------------------------------------
@@ -254,3 +260,157 @@ def test_sync_daily_category_rerun_is_idempotent(conn):
 
     count = conn.execute("SELECT COUNT(*) FROM sleep").fetchone()[0]
     assert count == 3  # not 6 -- re-running never duplicates rows
+
+
+# ---------------------------------------------------------------------
+# Gap walk-back: re-fetch empty shells the forward cursor already passed
+# ---------------------------------------------------------------------
+
+
+def test_day_has_filled_data_treats_null_shell_as_gap(conn):
+    upsert(
+        conn,
+        "daily_health_metrics",
+        {"calendar_date": "2026-07-27", "source": "api"},
+        ["calendar_date"],
+    )
+    upsert(
+        conn,
+        "daily_health_metrics",
+        {"calendar_date": "2026-07-26", "resting_hr": 53, "total_steps": 4720, "source": "api"},
+        ["calendar_date"],
+    )
+    assert day_has_filled_data(conn, "daily_health_metrics", "2026-07-26") is True
+    assert day_has_filled_data(conn, "daily_health_metrics", "2026-07-27") is False
+    assert day_has_filled_data(conn, "daily_health_metrics", "2026-07-28") is False  # missing
+
+
+def test_gap_refetch_start_walks_back_to_first_non_gap(conn):
+    # 7/26 filled; 7/27-30 empty shells; cursor thinks we're at 7/31
+    upsert(
+        conn,
+        "hrv_daily",
+        {
+            "calendar_date": "2026-07-26",
+            "last_night_avg": 49.0,
+            "weekly_avg": 45.0,
+            "status": "BALANCED",
+            "source": "api",
+        },
+        ["calendar_date"],
+    )
+    # 7/31 also filled (today) — gaps are in the middle
+    upsert(
+        conn,
+        "hrv_daily",
+        {
+            "calendar_date": "2026-07-31",
+            "last_night_avg": 44.0,
+            "weekly_avg": 44.0,
+            "status": "BALANCED",
+            "source": "api",
+        },
+        ["calendar_date"],
+    )
+
+    start = gap_refetch_start(
+        conn,
+        "hrv_daily",
+        cursor_start=date(2026, 7, 31),
+        today=date(2026, 7, 31),
+        max_gap_days=21,
+    )
+    assert start == date(2026, 7, 27)
+
+
+def test_gap_refetch_start_no_gaps_stays_at_cursor(conn):
+    for d in ("2026-07-29", "2026-07-30", "2026-07-31"):
+        upsert(
+            conn,
+            "hrv_daily",
+            {
+                "calendar_date": d,
+                "last_night_avg": 45.0,
+                "weekly_avg": 45.0,
+                "status": "BALANCED",
+                "source": "api",
+            },
+            ["calendar_date"],
+        )
+    start = gap_refetch_start(
+        conn,
+        "hrv_daily",
+        cursor_start=date(2026, 7, 31),
+        today=date(2026, 7, 31),
+        max_gap_days=21,
+    )
+    assert start == date(2026, 7, 31)
+
+
+def test_gap_refetch_start_respects_max_gap_days_floor(conn):
+    # Everything empty inside a small window — should not walk past floor
+    start = gap_refetch_start(
+        conn,
+        "hrv_daily",
+        cursor_start=date(2026, 7, 31),
+        today=date(2026, 7, 31),
+        max_gap_days=3,
+    )
+    assert start == date(2026, 7, 28)  # today - 3
+
+
+def test_incremental_sync_refetches_gap_range(conn):
+    set_cursor(conn, "hrv_daily", "forward", "date", "2026-07-31")
+    upsert(
+        conn,
+        "hrv_daily",
+        {
+            "calendar_date": "2026-07-26",
+            "last_night_avg": 49.0,
+            "weekly_avg": 45.0,
+            "status": "BALANCED",
+            "source": "api",
+        },
+        ["calendar_date"],
+    )
+    # empty shells that the old cursor walked past
+    for d in ("2026-07-27", "2026-07-28", "2026-07-29", "2026-07-30", "2026-07-31"):
+        # no hrv rows — pure gaps
+        pass
+
+    fetched_dates: list[str] = []
+
+    def fetch(garmin, cdate):
+        fetched_dates.append(cdate)
+        return {
+            "hrvSummary": {
+                "lastNightAvg": 40.0,
+                "weeklyAvg": 42.0,
+                "status": "BALANCED",
+                "baseline": {},
+            }
+        }
+
+    from garmin_mcp.sync.daily_categories import _map_hrv
+
+    spec = DailyCategorySpec(
+        category="hrv_daily",
+        table="hrv_daily",
+        fetch=fetch,
+        map_row=_map_hrv,
+    )
+    result = incremental_sync(
+        spec,
+        DummyRateLimitedClient(),
+        None,
+        conn,
+        today=date(2026, 7, 31),
+        max_gap_days=21,
+    )
+    assert result.failed == []
+    # Must include the gap days 7/27..7/30, not only the cursor tip 7/31
+    assert "2026-07-27" in fetched_dates
+    assert "2026-07-28" in fetched_dates
+    assert "2026-07-31" in fetched_dates
+    assert fetched_dates[0] == "2026-07-27"
+    assert get_cursor(conn, "hrv_daily", "forward") == "2026-07-31"
