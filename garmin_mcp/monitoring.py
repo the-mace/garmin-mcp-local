@@ -68,9 +68,20 @@ def check_run_type(
 ) -> list[WatchdogIssue]:
     """One issue per category that's either never logged a run, gone
     stale (older than `max_age`), or whose most recent run didn't
-    succeed."""
+    succeed -- except when *no* category has run recently, which means the
+    whole job didn't run. That's reported as a single run-level issue
+    (category "*") rather than one per category, since every category
+    going stale together is one failure, not several."""
     now = now or datetime.utcnow()
     latest = _latest_per_category(conn, run_type)
+
+    fresh = [
+        row for cat in categories if (row := latest.get(cat)) is not None
+        and now - datetime.fromisoformat(row["started_at"]) <= max_age
+    ]
+    if categories and not fresh:
+        return [_whole_run_issue(run_type, [latest[c] for c in categories if c in latest], now)]
+
     issues: list[WatchdogIssue] = []
 
     for category in sorted(categories):
@@ -86,7 +97,7 @@ def check_run_type(
         if age > max_age:
             issues.append(
                 WatchdogIssue(
-                    run_type, category, "stale", f"last run was {age} ago (started_at={row['started_at']})"
+                    run_type, category, "stale", f"last run was {_fmt_age(age)} ago (started_at={row['started_at']})"
                 )
             )
         elif row["status"] != "success":
@@ -94,6 +105,21 @@ def check_run_type(
             issues.append(WatchdogIssue(run_type, category, f"status:{row['status']}", detail))
 
     return issues
+
+
+def _whole_run_issue(run_type: str, rows: list[sqlite3.Row], now: datetime) -> WatchdogIssue:
+    if not rows:
+        return WatchdogIssue(run_type, "*", "missing", "no sync_log entry has ever been recorded")
+    last_started = max(row["started_at"] for row in rows)
+    age = now - datetime.fromisoformat(last_started)
+    return WatchdogIssue(
+        run_type, "*", "stale", f"job hasn't run in {_fmt_age(age)} (last started_at={last_started})"
+    )
+
+
+def _fmt_age(age: timedelta) -> str:
+    # Whole minutes are plenty for a daily job; drop the microseconds noise.
+    return str(timedelta(minutes=int(age.total_seconds() // 60)))
 
 
 def check_sync(conn: sqlite3.Connection, *, max_age: timedelta, now: datetime | None = None) -> list[WatchdogIssue]:
@@ -105,11 +131,17 @@ def check_backfill(conn: sqlite3.Connection, *, max_age: timedelta, now: datetim
     it to a subset), so rather than hardcode that subset here, treat
     "whatever categories have ever logged a backfill run" as the expected
     set -- and flag total absence separately, since that set is empty the
-    first time this ever runs too."""
+    first time this ever runs too.
+
+    A category whose latest backfill row is `status='complete'` has walked
+    all the way back to `--earliest-date` and is dropped from the expected
+    set for good -- so the backfill job can be unloaded once it's finished
+    without the watchdog treating that as a missed run."""
     conn.row_factory = sqlite3.Row
     seen = conn.execute("SELECT DISTINCT category FROM sync_log WHERE run_type = 'backfill'").fetchall()
     if not seen:
         return [WatchdogIssue("backfill", "*", "missing", "no backfill sync_log entry has ever been recorded")]
 
-    categories = {row["category"] for row in seen}
+    latest = _latest_per_category(conn, "backfill")
+    categories = {row["category"] for row in seen if latest[row["category"]]["status"] != "complete"}
     return check_run_type(conn, run_type="backfill", categories=categories, max_age=max_age, now=now)

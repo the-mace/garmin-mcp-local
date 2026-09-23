@@ -276,12 +276,23 @@ def backfill_batch(
     earliest_date: date = date(2000, 1, 1),
 ) -> SyncResult | None:
     """Walk one controlled batch further into the past. Returns None once
-    `earliest_date` has been reached (nothing left to backfill)."""
+    `earliest_date` has been reached (nothing left to backfill), and logs a
+    `status='complete'` row so the watchdog knows this category is done
+    rather than stalled."""
     from garmin_mcp.sync.cursor import get_cursor
 
     cursor = get_cursor(conn, spec.category, "backward")
     end = date.fromisoformat(cursor) - timedelta(days=1) if cursor else today
     if end < earliest_date:
+        log_sync_run(
+            conn,
+            category=spec.category,
+            run_type="backfill",
+            status="complete",
+            cursor_type="date",
+            range_start=earliest_date.isoformat(),
+            range_end=cursor,
+        )
         return None
     start = max(end - timedelta(days=batch_days - 1), earliest_date)
 

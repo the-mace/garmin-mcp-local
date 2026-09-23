@@ -386,7 +386,7 @@ CREATE TABLE IF NOT EXISTS sync_log (
     range_start TEXT,
     range_end TEXT,
     last_activity_id INTEGER,
-    status TEXT NOT NULL,             -- 'success' | 'partial' | 'failed' | 'rate_limited'
+    status TEXT NOT NULL,             -- 'success' | 'partial' | 'failed' | 'rate_limited' | 'complete' (backfill reached earliest date)
     records_expected INTEGER,
     records_fetched INTEGER,
     warning TEXT,

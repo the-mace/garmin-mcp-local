@@ -19,8 +19,11 @@
         <!-- Generic lower bound, not this account's actual creation date --
              backfill_batch naturally stops being useful (empty responses)
              once it walks past when the account actually started, so an
-             exact value isn't needed here. Tighten it if you want backfill
-             to finish sooner. -->
+             exact value isn't needed here. Tighten it in your installed
+             copy to just before your first data if you want backfill to
+             finish sooner: once every category walks past this date it
+             logs status='complete' and the watchdog stops expecting it,
+             so the job can then be unloaded. -->
         <string>2000-01-01</string>
         <!-- activities excluded: the CSV export already covers full activity
              history for this account, so backfilling it would just re-walk

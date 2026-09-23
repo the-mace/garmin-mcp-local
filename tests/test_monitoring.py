@@ -38,11 +38,32 @@ def _insert_log(conn, *, category, run_type, status, started_at):
     conn.commit()
 
 
-def test_every_expected_category_missing_on_an_empty_db(conn):
+def test_empty_db_is_one_missing_issue_not_one_per_category(conn):
     issues = check_sync(conn, max_age=MAX_AGE, now=NOW)
-    flagged = {i.category for i in issues}
-    assert flagged == expected_sync_categories()
-    assert all(i.problem == "missing" for i in issues)
+    assert len(issues) == 1
+    assert (issues[0].category, issues[0].problem) == ("*", "missing")
+
+
+def test_whole_job_not_running_is_one_stale_issue(conn):
+    # One missed run makes every category stale at once; that's a single
+    # failure and should produce a single alert line.
+    last = NOW - timedelta(days=2)
+    for category in expected_sync_categories():
+        _insert_log(conn, category=category, run_type="incremental_sync", status="success", started_at=last)
+
+    issues = check_sync(conn, max_age=MAX_AGE, now=NOW)
+    assert len(issues) == 1
+    assert (issues[0].category, issues[0].problem) == ("*", "stale")
+    assert last.isoformat(sep=" ") in issues[0].detail
+
+
+def test_backfill_not_running_is_one_stale_issue(conn):
+    for category in ("sleep", "hrv_daily", "body_composition"):
+        _insert_log(conn, category=category, run_type="backfill", status="success", started_at=NOW - timedelta(days=2))
+
+    issues = check_backfill(conn, max_age=MAX_AGE, now=NOW)
+    assert len(issues) == 1
+    assert (issues[0].run_type, issues[0].category, issues[0].problem) == ("backfill", "*", "stale")
 
 
 def test_no_issues_when_everything_recently_succeeded(conn):
@@ -87,6 +108,22 @@ def test_backfill_flags_total_absence_as_a_single_issue(conn):
     assert issues[0].category == "*"
 
 
+def test_completed_backfill_categories_are_not_expected_to_keep_running(conn):
+    # Finished long ago, then the job was unloaded -- not a missed run.
+    for category in ("sleep", "hrv_daily"):
+        _insert_log(conn, category=category, run_type="backfill", status="success", started_at=NOW - timedelta(days=10))
+        _insert_log(conn, category=category, run_type="backfill", status="complete", started_at=NOW - timedelta(days=9))
+    # Still in progress and stalled -- should still be flagged.
+    _insert_log(conn, category="body_composition", run_type="backfill", status="success", started_at=NOW - timedelta(days=9))
+
+    issues = check_backfill(conn, max_age=MAX_AGE, now=NOW)
+    assert len(issues) == 1
+    assert (issues[0].category, issues[0].problem) == ("*", "stale")
+
+    _insert_log(conn, category="body_composition", run_type="backfill", status="complete", started_at=NOW - timedelta(days=8))
+    assert check_backfill(conn, max_age=MAX_AGE, now=NOW) == []
+
+
 def test_backfill_only_checks_categories_it_has_ever_touched(conn):
     # activities is deliberately excluded from backfill in this project's
     # default plist -- backfill shouldn't be flagged as "missing" for a
@@ -95,3 +132,22 @@ def test_backfill_only_checks_categories_it_has_ever_touched(conn):
 
     issues = check_backfill(conn, max_age=MAX_AGE, now=NOW)
     assert issues == []
+
+
+def test_backfill_batch_logs_complete_once_past_earliest_date(conn):
+    from datetime import date
+
+    from garmin_mcp.sync.cursor import set_cursor
+    from garmin_mcp.sync.daily_categories import build_specs
+    from garmin_mcp.sync.engine import backfill_batch
+
+    spec = next(s for s in build_specs() if s.category == "sleep")
+    set_cursor(conn, "sleep", "backward", "date", "2018-08-01")
+
+    # Client/garmin are never touched on the already-finished path.
+    assert backfill_batch(spec, None, None, conn, date(2026, 7, 14), earliest_date=date(2018, 8, 1)) is None
+    status = conn.execute(
+        "SELECT status FROM sync_log WHERE category = 'sleep' AND run_type = 'backfill'"
+    ).fetchone()[0]
+    assert status == "complete"
+    assert check_backfill(conn, max_age=MAX_AGE, now=NOW) == []
