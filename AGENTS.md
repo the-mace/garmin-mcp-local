@@ -1,23 +1,21 @@
-# Agent instructions
+# Agent instructions: garmin-mcp-local
 
-## Before starting any work
+Shared rules (pull before work, tests and lint, secrets, commit attribution)
+live in the global `~/.config/agents/AGENTS.md`. If that file is not loaded
+(cloud or CI sessions), the short version is: `git pull --ff-only` first, run
+the tests below before committing, never commit secrets, and end agent commits
+with a `Co-Authored-By: <Tool> (<model>) <email>` trailer.
 
-Dependabot auto-merges dependency and GitHub Actions updates to `master` after
-CI passes. Your local checkout is often behind without any local commits.
+## Which coding agent
 
-**Always sync before editing, exploring, or running the app:**
+Use Claude Code with Sonnet for small, contained fixes driven by a watchdog or
+sync alert email. Use Opus 5.5 for multi-file changes to the sync engine,
+schema, or rate limiter. Grok Build is the second opinion.
 
-```bash
-git checkout master
-git pull --ff-only
-```
+## Repo specifics
 
-If `--ff-only` fails, stop and reconcile with the remote before making changes.
-Do not start work on a stale tip.
-
-After a pull that touches `pyproject.toml`, lockfiles, or other install metadata:
-
-```bash
-source .venv/bin/activate   # if you use the project venv
-pip install -e ".[dev]"
-```
+- The default branch is `master`, not `main`.
+- After a pull that touches `pyproject.toml`:
+  `source .venv/bin/activate && pip install -e ".[dev]"`.
+- Tests: `pytest` (idempotency, rate limiter, monitoring). Setup, launchd jobs,
+  and architecture are in `README.md`.
