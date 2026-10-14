@@ -80,8 +80,8 @@ def test_backoff_grows_exponentially_and_is_capped(conn, clock):
     assert client.compute_backoff_seconds(2) == pytest.approx(4.0)
     assert client.compute_backoff_seconds(3) == pytest.approx(8.0)
     assert client.compute_backoff_seconds(4) == pytest.approx(16.0)
-    assert client.compute_backoff_seconds(5) == pytest.approx(20.0)  # capped
-    assert client.compute_backoff_seconds(10) == pytest.approx(20.0)  # still capped
+    assert client.compute_backoff_seconds(5) == pytest.approx(20.0)
+    assert client.compute_backoff_seconds(10) == pytest.approx(20.0)
 
 
 def test_429_retries_then_succeeds(conn, clock):
