@@ -1,6 +1,7 @@
-# After CI passes on a Dependabot PR, approve and squash-merge it.
+# After CI passes on a Dependabot PR, approve and squash-merge it if it is a
+# patch or minor bump (0.x packages: patch only). Majors are left for review.
 # Human PRs are left alone — branch protection requires 1 review for those.
-# Only dependabot[bot] PRs are approved/merged here (including major bumps).
+# Only dependabot[bot] PRs are approved/merged here (patch/minor per policy; majors manual).
 #
 # Repo settings this relies on:
 # - Actions → Workflow permissions → "Allow GitHub Actions to create and
@@ -44,10 +45,41 @@ jobs:
           echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "number=${number}" >> "$GITHUB_OUTPUT"
           echo "url=${url}" >> "$GITHUB_OUTPUT"
+          title=$(printf '%s' "$pr_json" | jq -r .title)
+          echo "title=${title}" >> "$GITHUB_OUTPUT"
           echo "Dependabot PR #${number}: ${url}"
 
-      - name: Approve PR
+      - name: Classify bump (patch/minor auto; 0.x minor and majors manual)
+        id: bump
         if: steps.pr.outputs.skip != 'true'
+        env:
+          PR_TITLE: ${{ steps.pr.outputs.title }}
+        run: |
+          # Policy: auto-merge patch and minor bumps once CI passes, except
+          # packages currently on 0.x (minor can break there) stay patch-only.
+          # Majors and unparseable titles (e.g. grouped updates) stay manual.
+          verdict=$(python3 - "$PR_TITLE" <<'EOF'
+          import re, sys
+          m = re.search(r"from\s+v?(\d+(?:\.\d+)*)\s+to\s+v?(\d+(?:\.\d+)*)", sys.argv[1], re.I)
+          if not m:
+              print("manual"); sys.exit()
+          pad = lambda v: (tuple(int(p) for p in v.split(".")) + (0, 0, 0))[:3]
+          old, new = pad(m.group(1)), pad(m.group(2))
+          if old[0] != new[0]:
+              print("manual")
+          elif old[1] == new[1]:
+              print("auto")
+          elif old[0] == 0:
+              print("manual")
+          else:
+              print("auto")
+          EOF
+          )
+          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
+          echo "Title: ${PR_TITLE} -> ${verdict}"
+
+      - name: Approve PR
+        if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.verdict == 'auto'
         run: |
           if ! gh pr review --approve "$PR_URL"; then
             echo "::error::Could not approve. Check Actions → Workflow permissions → Allow GitHub Actions to create and approve pull requests."
@@ -58,7 +90,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Squash-merge
-        if: steps.pr.outputs.skip != 'true'
+        if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.verdict == 'auto'
         run: |
           if gh pr merge --squash --delete-branch "$PR_URL"; then
             echo "Merged."
