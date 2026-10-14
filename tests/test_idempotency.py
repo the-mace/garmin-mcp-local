@@ -27,9 +27,7 @@ from garmin_mcp.sync.engine import (
 )
 
 
-# ---------------------------------------------------------------------
 # Generic upsert() helper
-# ---------------------------------------------------------------------
 
 
 @pytest.fixture
@@ -81,9 +79,7 @@ def test_activity_hr_zones_upsert_idempotent(conn):
     assert rows[0]["seconds_in_zone"] == 60
 
 
-# ---------------------------------------------------------------------
 # Bulk import idempotency against a minimal synthetic export archive
-# ---------------------------------------------------------------------
 
 
 def _build_fake_export(tmp_path) -> "Path":
@@ -165,9 +161,7 @@ def test_bulk_import_is_idempotent(tmp_path):
         conn.close()
 
 
-# ---------------------------------------------------------------------
 # sync_cursor round trip
-# ---------------------------------------------------------------------
 
 
 def test_sync_cursor_upsert_round_trip(conn):
@@ -199,9 +193,7 @@ def test_set_cursor_is_durable_without_a_later_commit(tmp_path):
     reopened.close()
 
 
-# ---------------------------------------------------------------------
 # Daily sync engine: partial-failure resume behavior
-# ---------------------------------------------------------------------
 
 
 def _spec_with_fetch(fetch_fn) -> DailyCategorySpec:
@@ -262,9 +254,7 @@ def test_sync_daily_category_rerun_is_idempotent(conn):
     assert count == 3  # not 6 -- re-running never duplicates rows
 
 
-# ---------------------------------------------------------------------
 # Gap walk-back: re-fetch empty shells the forward cursor already passed
-# ---------------------------------------------------------------------
 
 
 def test_day_has_filled_data_treats_null_shell_as_gap(conn):
