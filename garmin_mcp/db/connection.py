@@ -20,9 +20,22 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+# CREATE TABLE IF NOT EXISTS won't add columns to a table an older schema
+# already created, so columns added later are listed here and ALTERed in.
+_ADDED_COLUMNS = {
+    "activity_laps": [("intensity_type", "TEXT"), ("workout_step_index", "INTEGER")],
+}
+
+
 def apply_schema(conn: sqlite3.Connection) -> None:
     schema_sql = _SCHEMA_PATH.read_text()
     conn.executescript(schema_sql)
+    for table, columns in _ADDED_COLUMNS.items():
+        existing = {r[1] for r in conn.execute(f"PRAGMA table_info({table})")}
+        for name, col_type in columns:
+            if name not in existing:
+                conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {col_type}")
+    _table_columns_cache.clear()
     conn.commit()
 
 

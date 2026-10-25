@@ -145,7 +145,9 @@ CREATE TABLE IF NOT EXISTS activity_laps (
     elevation_gain_m REAL,
     elevation_loss_m REAL,
     calories REAL,
-    measurements_json TEXT,
+    intensity_type TEXT,       -- live API only: WARMUP/ACTIVE/RECOVERY/... for structured workouts
+    workout_step_index INTEGER, -- live API only: wktStepIndex of the workout step this lap ran
+    measurements_json TEXT,     -- bulk export: raw measurement array; live API: raw lapDTO
     UNIQUE (activity_id, lap_index)
 );
 

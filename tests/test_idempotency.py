@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import zipfile
 from datetime import date
+from pathlib import Path
 
 import pytest
 
@@ -82,7 +83,7 @@ def test_activity_hr_zones_upsert_idempotent(conn):
 # Bulk import idempotency against a minimal synthetic export archive
 
 
-def _build_fake_export(tmp_path) -> "Path":
+def _build_fake_export(tmp_path) -> Path:
     activities = [
         {
             "summarizedActivitiesExport": [
@@ -404,3 +405,73 @@ def test_incremental_sync_refetches_gap_range(conn):
     assert "2026-07-31" in fetched_dates
     assert fetched_dates[0] == "2026-07-27"
     assert get_cursor(conn, "hrv_daily", "forward") == "2026-07-31"
+
+
+class _FakeSplitsGarmin:
+    def __init__(self, laps_by_activity):
+        self.laps_by_activity = laps_by_activity
+        self.calls: list[int] = []
+
+    def get_activity_splits(self, activity_id):
+        self.calls.append(activity_id)
+        return {"activityId": activity_id, "lapDTOs": self.laps_by_activity.get(activity_id, [])}
+
+
+def _fake_lap(index, intensity):
+    return {
+        "lapIndex": index,
+        "startTimeGMT": "2026-01-01T10:00:00.0",
+        "elapsedDuration": 60.0,
+        "duration": 60.0,
+        "distance": 100.0,
+        "averageHR": 120.0,
+        "averageRunCadence": 150.0,
+        "intensityType": intensity,
+        "wktStepIndex": index - 1,
+    }
+
+
+def test_fill_missing_laps_fetches_once_and_marks_lap_count(conn):
+    from garmin_mcp.sync.activities_sync import ActivitiesSyncResult, fill_missing_laps
+
+    for aid, source in ((1, "api"), (2, "api"), (3, "csv_export")):
+        upsert(conn, "activities", {"activity_id": aid, "begin_timestamp_utc_ms": aid, "source": source}, ["activity_id"])
+    garmin = _FakeSplitsGarmin({1: [_fake_lap(1, "WARMUP"), _fake_lap(2, "ACTIVE")]})
+
+    result = ActivitiesSyncResult()
+    fill_missing_laps(DummyRateLimitedClient(), garmin, conn, result)
+    assert sorted(garmin.calls) == [1, 2]
+    assert result.laps_written == 2
+
+    laps = conn.execute(
+        "SELECT lap_index, intensity_type, workout_step_index, avg_cadence, start_time_utc_ms, end_time_utc_ms "
+        "FROM activity_laps WHERE activity_id = 1 ORDER BY lap_index"
+    ).fetchall()
+    assert [tuple(r) for r in laps] == [
+        (1, "WARMUP", 0, 150.0, 1767261600000, 1767261660000),
+        (2, "ACTIVE", 1, 150.0, 1767261600000, 1767261660000),
+    ]
+    counts = dict(conn.execute("SELECT activity_id, lap_count FROM activities").fetchall())
+    assert counts == {1: 2, 2: 0, 3: None}
+
+    fill_missing_laps(DummyRateLimitedClient(), garmin, conn, ActivitiesSyncResult())
+    assert sorted(garmin.calls) == [1, 2]
+
+
+def test_apply_schema_adds_new_lap_columns_to_old_table(tmp_path):
+    import sqlite3
+
+    from garmin_mcp.db.connection import apply_schema
+
+    db = tmp_path / "old.db"
+    raw = sqlite3.connect(db)
+    raw.execute(
+        "CREATE TABLE activity_laps (id INTEGER PRIMARY KEY, activity_id INTEGER NOT NULL, "
+        "lap_index INTEGER NOT NULL, UNIQUE (activity_id, lap_index))"
+    )
+    raw.commit()
+    apply_schema(raw)
+    apply_schema(raw)
+    cols = {r[1] for r in raw.execute("PRAGMA table_info(activity_laps)")}
+    assert {"intensity_type", "workout_step_index"} <= cols
+    raw.close()

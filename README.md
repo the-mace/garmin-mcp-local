@@ -278,6 +278,11 @@ the authoritative, commented definition):
 
 - **Activities**: `activities` (full per-activity detail), `activity_laps`,
   `activity_hr_zones`, `activity_power_zones`, `gear`, `activity_gear`.
+  Laps for live-synced activities come from `get_activity_splits` (one extra
+  call per activity, at most 40 per sync run, newest first) and include
+  `intensity_type` (WARMUP/ACTIVE/RECOVERY/COOLDOWN) and
+  `workout_step_index` for structured watch workouts. `activities.lap_count
+  IS NULL` on an `api` row means its splits haven't been fetched yet.
 - **Daily health**: `daily_health_metrics` (steps/calories/HR/stress/body
   battery/SpO2/respiration), `daily_stress_periods` (TOTAL/AWAKE/ASLEEP
   breakdown), `sleep`, `hrv_daily`, `body_composition`.

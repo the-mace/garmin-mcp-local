@@ -18,18 +18,26 @@ already-fetched activity occasionally gets re-fetched. Backfill accounting
 CAVEAT: field names for the *live* per-activity summary dict were not
 verified against a real account in this environment -- see
 sync/daily_categories.py's module docstring for the same caveat.
+
+Laps/splits are not in the activity list response; they cost one
+`get_activity_splits` call per activity. `fill_missing_laps` fetches them
+for API-sourced activities whose `lap_count` is still NULL (the marker for
+"splits never fetched"), a capped number per run so a large backlog drains
+over several syncs instead of one long burst.
 """
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 from garminconnect import Garmin
 
 from garmin_mcp.db.connection import upsert
 from garmin_mcp.db.sync_log import log_sync_run
-from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, StillCoolingDown
+from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimitExceeded, StillCoolingDown
 from garmin_mcp.sync.cursor import get_cursor, set_cursor
 
 CATEGORY = "activities"
@@ -72,10 +80,46 @@ def _map_live_activity(act: dict) -> dict | None:
     }
 
 
+def _gmt_to_utc_ms(value: str | None) -> int | None:
+    if not value:
+        return None
+    dt = datetime.fromisoformat(value).replace(tzinfo=timezone.utc)
+    return int(dt.timestamp() * 1000)
+
+
+def _map_live_lap(activity_id: int, lap_index: int, lap: dict) -> dict:
+    start_ms = _gmt_to_utc_ms(lap.get("startTimeGMT"))
+    elapsed = lap.get("elapsedDuration")
+    return {
+        "activity_id": activity_id,
+        "lap_index": lap.get("lapIndex") or lap_index,
+        "start_time_utc_ms": start_ms,
+        "end_time_utc_ms": start_ms + int(elapsed * 1000) if start_ms is not None and elapsed is not None else None,
+        "distance_m": lap.get("distance"),
+        "duration_s": lap.get("duration"),
+        "avg_hr": lap.get("averageHR"),
+        "max_hr": lap.get("maxHR"),
+        "avg_power_w": lap.get("averagePower"),
+        "max_power_w": lap.get("maxPower"),
+        "avg_speed_mps": lap.get("averageSpeed"),
+        "max_speed_mps": lap.get("maxSpeed"),
+        "avg_cadence": lap.get("averageRunCadence", lap.get("averageBikeCadence")),
+        "max_cadence": lap.get("maxRunCadence", lap.get("maxBikeCadence")),
+        "elevation_gain_m": lap.get("elevationGain"),
+        "elevation_loss_m": lap.get("elevationLoss"),
+        "calories": lap.get("calories"),
+        "intensity_type": lap.get("intensityType"),
+        "workout_step_index": lap.get("wktStepIndex"),
+        "measurements_json": json.dumps(lap),
+    }
+
+
 @dataclass
 class ActivitiesSyncResult:
     pages_fetched: int = 0
     activities_written: int = 0
+    laps_activities_filled: int = 0
+    laps_written: int = 0
     reached_known_activity: bool = False
     reached_end_of_history: bool = False
     stopped_early: bool = False
@@ -84,6 +128,44 @@ class ActivitiesSyncResult:
     def __post_init__(self):
         if self.warnings is None:
             self.warnings = []
+
+
+def fill_missing_laps(
+    rate_limited_client: RateLimitedClient,
+    garmin: Garmin,
+    conn: sqlite3.Connection,
+    result: ActivitiesSyncResult,
+    max_activities: int = 40,
+) -> None:
+    """Fetch splits for API-sourced activities that have never had them
+    fetched (lap_count IS NULL), newest first, up to `max_activities`."""
+    pending = conn.execute(
+        """
+        SELECT activity_id FROM activities
+        WHERE source = 'api' AND lap_count IS NULL
+        ORDER BY begin_timestamp_utc_ms DESC
+        LIMIT ?
+        """,
+        (max_activities,),
+    ).fetchall()
+
+    for (activity_id,) in pending:
+        try:
+            splits = rate_limited_client.call(CATEGORY, garmin.get_activity_splits, activity_id)
+        except (StillCoolingDown, RateLimitExceeded):
+            result.stopped_early = True
+            break
+        except Exception as exc:  # noqa: BLE001 -- one bad activity shouldn't block the rest; retried next run
+            result.warnings.append(f"splits for activity {activity_id} failed: {exc!r}")
+            continue
+
+        laps = (splits or {}).get("lapDTOs") or []
+        for i, lap in enumerate(laps, start=1):
+            upsert(conn, "activity_laps", _map_live_lap(activity_id, i, lap), ["activity_id", "lap_index"])
+        conn.execute("UPDATE activities SET lap_count = ? WHERE activity_id = ?", (len(laps), activity_id))
+        conn.commit()
+        result.laps_activities_filled += 1
+        result.laps_written += len(laps)
 
 
 def incremental_sync_activities(
@@ -134,6 +216,9 @@ def incremental_sync_activities(
         if result.reached_known_activity or len(page) < page_size:
             break
         start += page_size
+
+    if not result.stopped_early:
+        fill_missing_laps(rate_limited_client, garmin, conn, result)
 
     status = "success"
     warning = "; ".join(result.warnings) or None
