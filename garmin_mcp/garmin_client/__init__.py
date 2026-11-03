@@ -1,10 +1,10 @@
+from garmin_mcp.garmin_client.factory import GarminClients, build_client, build_clients
 from garmin_mcp.garmin_client.rate_limiter import (
     RateLimitedClient,
     RateLimiterConfig,
     RateLimitExceeded,
     StillCoolingDown,
 )
-from garmin_mcp.garmin_client.factory import build_client
 
 __all__ = [
     "RateLimitedClient",
@@ -12,4 +12,6 @@ __all__ = [
     "RateLimitExceeded",
     "StillCoolingDown",
     "build_client",
+    "build_clients",
+    "GarminClients",
 ]

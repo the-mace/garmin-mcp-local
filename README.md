@@ -6,8 +6,18 @@ the live API), and a rate-limited sync so nothing gets silently dropped or
 duplicated. Exposes read-only MCP tools backed entirely by the local cache,
 plus one explicit `sync` tool that talks to the live API.
 
-Built on [`garminconnect`](https://github.com/cyberjunky/python-garminconnect)
-(cyberjunky) as the only Garmin API dependency.
+Talks to Garmin two ways:
+
+- **Garmin's official [Connect Personal API](https://developer.garmin.com/gc-developer-program/personal/)**
+  (when `GARMIN_API_KEY` is set) for activities, laps, daily summary, sleep,
+  HRV and body composition.
+- **[`garminconnect`](https://github.com/cyberjunky/python-garminconnect)**
+  (cyberjunky, unofficial) for training readiness, training status and race
+  predictions, which the official API doesn't serve, and as the fallback for
+  everything when no API key is set.
+
+Both serve the same Connect endpoints with the same JSON, so the same
+mappers handle either source.
 
 ## Why a local cache instead of calling the API every time?
 
@@ -27,7 +37,16 @@ cp .env.example .env
 # edit .env: set GARMIN_EMAIL / GARMIN_PASSWORD (only needed for the first
 # login -- after that, the session token is cached under GARMIN_TOKEN_STORE
 # and credentials aren't read again unless the token expires/is revoked)
+# Optional but recommended: set GARMIN_API_KEY (create one at
+# https://connect.garmin.com/app/settings/personalApiToken, max lifetime one
+# year) and GARMIN_API_KEY_EXPIRES so the watchdog warns before it lapses.
 ```
+
+With an API key, the unofficial login happens only when a category that
+needs it runs. If it fails (password change, MFA, Garmin blocking the
+scraper), the official-API categories still sync, the others are logged as
+failed, and `garmin-mcp-sync` / `garmin-mcp-backfill` send the crash alert
+after saving what they could.
 
 Nothing in `.env` is ever committed -- `.gitignore` excludes it, the SQLite
 DB file, and the token cache directory. `.env.example` only has placeholders.
@@ -281,11 +300,16 @@ the authoritative, commented definition):
 
 - **Activities**: `activities` (full per-activity detail), `activity_laps`,
   `activity_hr_zones`, `activity_power_zones`, `gear`, `activity_gear`.
-  Laps for live-synced activities come from `get_activity_splits` (one extra
-  call per activity, at most 40 per sync run, newest first) and include
-  `intensity_type` (WARMUP/ACTIVE/RECOVERY/COOLDOWN) and
-  `workout_step_index` for structured watch workouts. `activities.lap_count
-  IS NULL` on an `api` row means its splits haven't been fetched yet.
+  Laps for live-synced activities cost one extra call per activity (at most
+  40 per sync run, newest first). With an API key that call downloads the
+  activity's original FIT file and reads its lap messages; activities
+  without a downloadable file (third-party uploads such as Peloton) and
+  runs without a key use `garminconnect`'s `get_activity_splits` instead.
+  The two sources agree field for field except that FIT lap elevation
+  gain/loss is whole meters. Laps include `intensity_type`
+  (WARMUP/ACTIVE/RECOVERY/COOLDOWN) and `workout_step_index` for structured
+  watch workouts. `activities.lap_count IS NULL` on an `api` row means its
+  laps haven't been fetched yet.
 - **Daily health**: `daily_health_metrics` (steps/calories/HR/stress/body
   battery/SpO2/respiration), `daily_stress_periods` (TOTAL/AWAKE/ASLEEP
   breakdown), `sleep`, `hrv_daily`, `body_composition`.

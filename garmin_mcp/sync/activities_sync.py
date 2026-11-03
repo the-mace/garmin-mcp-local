@@ -1,7 +1,9 @@
 """Activities sync/backfill via Garmin's offset-paginated activity list.
 
-Unlike the daily-cadence categories, `get_activities(start, limit)` has no
-date-range filter -- it's pure offset pagination over "most recent first".
+The list comes from the official Personal API when an API key is set,
+otherwise from `garminconnect`; both serve the same endpoint and shape.
+Unlike the daily-cadence categories, sync walks it with pure offset
+pagination over "most recent first".
 That makes it a good fit for *incremental* sync (walk from offset 0 until
 we see an activity_id we already have -- "caught up") and a workable, if
 approximate, fit for *backfill* (persist how many offset slots we've
@@ -10,20 +12,18 @@ consumed and continue from there next time).
 Caveat: because new activities appear at offset 0, the offset-to-activity
 mapping drifts by however many new activities landed since the last
 backfill run. This project doesn't try to correct for that drift with a
-date-based method (the API doesn't offer one for `get_activities`) --
-idempotent upserts make any resulting overlap harmless, it just means an
+date-based method -- idempotent upserts make any resulting overlap harmless, it just means an
 already-fetched activity occasionally gets re-fetched. Backfill accounting
 (expected/actual, gap warnings) is unaffected either way.
 
-CAVEAT: field names for the *live* per-activity summary dict were not
-verified against a real account in this environment -- see
-sync/daily_categories.py's module docstring for the same caveat.
-
-Laps/splits are not in the activity list response; they cost one
-`get_activity_splits` call per activity. `fill_missing_laps` fetches them
-for API-sourced activities whose `lap_count` is still NULL (the marker for
-"splits never fetched"), a capped number per run so a large backlog drains
-over several syncs instead of one long burst.
+Laps are not in the activity list response; they cost one call per
+activity. With an API key that call downloads the original FIT file and
+reads its lap messages (garmin_mcp/sync/fit_laps.py). Activities with no
+downloadable file (third-party uploads such as Peloton) and runs without a
+key fall back to `garminconnect`'s `get_activity_splits`. `fill_missing_laps`
+fetches laps for API-sourced activities whose `lap_count` is still NULL
+(the marker for "laps never fetched"), a capped number per run so a large
+backlog drains over several syncs instead of one long burst.
 """
 
 from __future__ import annotations
@@ -33,12 +33,16 @@ import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
 
-from garminconnect import Garmin
-
 from garmin_mcp.db.connection import upsert
 from garmin_mcp.db.sync_log import log_sync_run
-from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimitExceeded, StillCoolingDown
+from garmin_mcp.garmin_client.factory import GarminClients
+from garmin_mcp.garmin_client.rate_limiter import (
+    RateLimitedClient,
+    RateLimitExceeded,
+    StillCoolingDown,
+)
 from garmin_mcp.sync.cursor import get_cursor, set_cursor
+from garmin_mcp.sync.fit_laps import parse_fit_laps
 
 CATEGORY = "activities"
 
@@ -130,14 +134,28 @@ class ActivitiesSyncResult:
             self.warnings = []
 
 
+def _activity_list_client(clients: GarminClients):
+    return clients.personal or clients.garmin
+
+
+def _fetch_laps(clients: GarminClients, activity_id: int) -> list[dict]:
+    if clients.personal is not None:
+        payload = clients.personal.download_activity_fit(activity_id)
+        if payload is not None:
+            return parse_fit_laps(activity_id, payload)
+    splits = clients.garmin.get_activity_splits(activity_id)
+    laps = (splits or {}).get("lapDTOs") or []
+    return [_map_live_lap(activity_id, i, lap) for i, lap in enumerate(laps, start=1)]
+
+
 def fill_missing_laps(
     rate_limited_client: RateLimitedClient,
-    garmin: Garmin,
+    clients: GarminClients,
     conn: sqlite3.Connection,
     result: ActivitiesSyncResult,
     max_activities: int = 40,
 ) -> None:
-    """Fetch splits for API-sourced activities that have never had them
+    """Fetch laps for API-sourced activities that have never had them
     fetched (lap_count IS NULL), newest first, up to `max_activities`."""
     pending = conn.execute(
         """
@@ -151,17 +169,16 @@ def fill_missing_laps(
 
     for (activity_id,) in pending:
         try:
-            splits = rate_limited_client.call(CATEGORY, garmin.get_activity_splits, activity_id)
+            laps = rate_limited_client.call(CATEGORY, _fetch_laps, clients, activity_id)
         except (StillCoolingDown, RateLimitExceeded):
             result.stopped_early = True
             break
         except Exception as exc:  # noqa: BLE001 -- one bad activity shouldn't block the rest; retried next run
-            result.warnings.append(f"splits for activity {activity_id} failed: {exc!r}")
+            result.warnings.append(f"laps for activity {activity_id} failed: {exc!r}")
             continue
 
-        laps = (splits or {}).get("lapDTOs") or []
-        for i, lap in enumerate(laps, start=1):
-            upsert(conn, "activity_laps", _map_live_lap(activity_id, i, lap), ["activity_id", "lap_index"])
+        for lap in laps:
+            upsert(conn, "activity_laps", lap, ["activity_id", "lap_index"])
         conn.execute("UPDATE activities SET lap_count = ? WHERE activity_id = ?", (len(laps), activity_id))
         conn.commit()
         result.laps_activities_filled += 1
@@ -170,7 +187,7 @@ def fill_missing_laps(
 
 def incremental_sync_activities(
     rate_limited_client: RateLimitedClient,
-    garmin: Garmin,
+    clients: GarminClients,
     conn: sqlite3.Connection,
     page_size: int = 50,
     max_pages: int = 20,
@@ -182,7 +199,7 @@ def incremental_sync_activities(
 
     for _ in range(max_pages):
         try:
-            page = rate_limited_client.call(CATEGORY, garmin.get_activities, start, page_size)
+            page = rate_limited_client.call(CATEGORY, _activity_list_client(clients).get_activities, start, page_size)
         except StillCoolingDown:
             result.stopped_early = True
             break
@@ -218,7 +235,7 @@ def incremental_sync_activities(
         start += page_size
 
     if not result.stopped_early:
-        fill_missing_laps(rate_limited_client, garmin, conn, result)
+        fill_missing_laps(rate_limited_client, clients, conn, result)
 
     status = "success"
     warning = "; ".join(result.warnings) or None
@@ -243,7 +260,7 @@ def incremental_sync_activities(
 
 def backfill_activities(
     rate_limited_client: RateLimitedClient,
-    garmin: Garmin,
+    clients: GarminClients,
     conn: sqlite3.Connection,
     page_size: int = 50,
     max_pages: int = 5,
@@ -256,7 +273,7 @@ def backfill_activities(
 
     for _ in range(max_pages):
         try:
-            page = rate_limited_client.call(CATEGORY, garmin.get_activities, start, page_size)
+            page = rate_limited_client.call(CATEGORY, _activity_list_client(clients).get_activities, start, page_size)
         except StillCoolingDown:
             result.stopped_early = True
             break

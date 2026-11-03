@@ -1,30 +1,29 @@
 """Per-category fetch + row-mapping definitions for the daily-cadence sync
 engine (garmin_mcp.sync.engine).
 
-CAVEAT: this project was built and verified against a real Garmin bulk
-export archive, but these live-API field mappings could not be verified
-against a real Garmin Connect account in this environment (no live
-credentials available here). Garmin Connect's live JSON endpoints are
-widely believed to share field names with the bulk export (same backend),
-and the mappings below follow that assumption plus this library's public
-docstrings, but you should sanity-check the first `garmin-mcp-sync` run
-(e.g. `SELECT * FROM daily_health_metrics ORDER BY calendar_date DESC LIMIT 3`)
-and adjust field names here if anything comes back NULL that shouldn't.
+Each fetch takes a `GarminClients` bundle. Categories the official Personal
+API serves (daily summary, sleep, HRV, body composition) use it when an API
+key is configured and fall back to `garminconnect` otherwise; training
+readiness, training status and race predictions only exist on
+`garminconnect`. Both APIs return the same JSON shapes for the shared
+categories (checked field by field against a real account), so one mapper
+serves either source.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
-from garminconnect import Garmin
+if TYPE_CHECKING:
+    from garmin_mcp.garmin_client.factory import GarminClients
 
 
 @dataclass
 class DailyCategorySpec:
     category: str  # sync_log category name
     table: str  # target table, keyed by calendar_date
-    fetch: Callable[[Garmin, str], Any]
+    fetch: Callable[["GarminClients", str], Any]
     map_row: Callable[[str, Any], dict | None]
     extra: Callable[[Any, str, Any], None] | None = None  # (conn, cdate, raw) -> None, for child tables
 
@@ -235,12 +234,12 @@ def _map_training_status(cdate: str, raw: dict) -> dict | None:
     }
 
 
-def _fetch_race_predictions(garmin: Garmin, cdate: str) -> dict | None:
+def _fetch_race_predictions(clients: GarminClients, cdate: str) -> dict | None:
     # get_race_predictions() only accepts either zero args (today's latest)
     # or all three of (startdate, enddate, _type) -- a bare `cdate` isn't a
     # valid call. Request the single-day range so this fits the per-date
     # daily-sync engine like every other category.
-    results = garmin.get_race_predictions(cdate, cdate, _type="daily")
+    results = clients.garmin.get_race_predictions(cdate, cdate, _type="daily")
     return results[0] if results else None
 
 
@@ -279,13 +278,28 @@ def _map_body_composition(cdate: str, raw: dict) -> dict | None:
     }
 
 
+def _official_first(method: str) -> Callable[[GarminClients, str], Any]:
+    def fetch(clients: GarminClients, cdate: str) -> Any:
+        client = clients.personal or clients.garmin
+        return getattr(client, method)(cdate)
+
+    return fetch
+
+
+def _garminconnect_only(method: str) -> Callable[[GarminClients, str], Any]:
+    def fetch(clients: GarminClients, cdate: str) -> Any:
+        return getattr(clients.garmin, method)(cdate)
+
+    return fetch
+
+
 def build_specs() -> list[DailyCategorySpec]:
     return [
-        DailyCategorySpec("daily_health_metrics", "daily_health_metrics", Garmin.get_user_summary, _map_daily_health, _extra_stress_periods),
-        DailyCategorySpec("sleep", "sleep", Garmin.get_sleep_data, _map_sleep),
-        DailyCategorySpec("hrv_daily", "hrv_daily", Garmin.get_hrv_data, _map_hrv),
-        DailyCategorySpec("training_readiness", "training_readiness", Garmin.get_training_readiness, _map_training_readiness),
-        DailyCategorySpec("training_status", "training_status", Garmin.get_training_status, _map_training_status),
+        DailyCategorySpec("daily_health_metrics", "daily_health_metrics", _official_first("get_user_summary"), _map_daily_health, _extra_stress_periods),
+        DailyCategorySpec("sleep", "sleep", _official_first("get_sleep_data"), _map_sleep),
+        DailyCategorySpec("hrv_daily", "hrv_daily", _official_first("get_hrv_data"), _map_hrv),
+        DailyCategorySpec("training_readiness", "training_readiness", _garminconnect_only("get_training_readiness"), _map_training_readiness),
+        DailyCategorySpec("training_status", "training_status", _garminconnect_only("get_training_status"), _map_training_status),
         DailyCategorySpec("race_predictions", "race_predictions", _fetch_race_predictions, _map_race_predictions),
-        DailyCategorySpec("body_composition", "body_composition", Garmin.get_body_composition, _map_body_composition),
+        DailyCategorySpec("body_composition", "body_composition", _official_first("get_body_composition"), _map_body_composition),
     ]

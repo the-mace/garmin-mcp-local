@@ -7,17 +7,19 @@ from __future__ import annotations
 import sqlite3
 from datetime import date
 
-from garminconnect import Garmin
-
+from garmin_mcp.garmin_client.factory import GarminClients
 from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient
-from garmin_mcp.sync.activities_sync import backfill_activities, incremental_sync_activities
+from garmin_mcp.sync.activities_sync import (
+    backfill_activities,
+    incremental_sync_activities,
+)
 from garmin_mcp.sync.daily_categories import build_specs
 from garmin_mcp.sync.engine import backfill_batch, incremental_sync
 
 
 def run_sync(
     conn: sqlite3.Connection,
-    garmin: Garmin,
+    clients: GarminClients,
     rate_limited_client: RateLimitedClient,
     today: date | None = None,
 ) -> dict:
@@ -27,16 +29,16 @@ def run_sync(
     today = today or date.today()
     results = {}
 
-    results["activities"] = incremental_sync_activities(rate_limited_client, garmin, conn)
+    results["activities"] = incremental_sync_activities(rate_limited_client, clients, conn)
     for spec in build_specs():
-        results[spec.category] = incremental_sync(spec, rate_limited_client, garmin, conn, today)
+        results[spec.category] = incremental_sync(spec, rate_limited_client, clients, conn, today)
 
     return results
 
 
 def run_backfill(
     conn: sqlite3.Connection,
-    garmin: Garmin,
+    clients: GarminClients,
     rate_limited_client: RateLimitedClient,
     today: date | None = None,
     batch_days: int = 30,
@@ -55,12 +57,12 @@ def run_backfill(
     results = {}
 
     if categories is None or "activities" in categories:
-        results["activities"] = backfill_activities(rate_limited_client, garmin, conn)
+        results["activities"] = backfill_activities(rate_limited_client, clients, conn)
     for spec in build_specs():
         if categories is not None and spec.category not in categories:
             continue
         results[spec.category] = backfill_batch(
-            spec, rate_limited_client, garmin, conn, today, batch_days=batch_days, earliest_date=earliest_date
+            spec, rate_limited_client, clients, conn, today, batch_days=batch_days, earliest_date=earliest_date
         )
 
     return results

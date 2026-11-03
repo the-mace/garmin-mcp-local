@@ -17,7 +17,7 @@ from datetime import date
 from garmin_mcp.alerting import send_alert_email
 from garmin_mcp.config import get_config
 from garmin_mcp.db.connection import init_db
-from garmin_mcp.garmin_client.factory import build_client
+from garmin_mcp.garmin_client.factory import build_clients
 from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimiterConfig
 from garmin_mcp.sync.runner import run_backfill
 
@@ -49,7 +49,7 @@ def _run() -> None:
 
     config = get_config()
     conn = init_db(config.db_path)
-    garmin = build_client(config, interactive=sys.stdin.isatty())
+    clients = build_clients(config, interactive=sys.stdin.isatty())
     rate_limited_client = RateLimitedClient(
         conn,
         RateLimiterConfig(
@@ -60,7 +60,7 @@ def _run() -> None:
 
     results = run_backfill(
         conn,
-        garmin,
+        clients,
         rate_limited_client,
         batch_days=args.batch_days,
         earliest_date=date.fromisoformat(args.earliest_date),
@@ -71,6 +71,11 @@ def _run() -> None:
         print(f"[{category}] {result}")
 
     conn.close()
+
+    # Categories on the official API have already been saved; surface the
+    # unofficial login failure through the crash alert in main().
+    if clients.login_error is not None:
+        raise clients.login_error
 
 
 if __name__ == "__main__":

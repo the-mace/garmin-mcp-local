@@ -29,10 +29,9 @@ import sqlite3
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from garminconnect import Garmin
-
 from garmin_mcp.db.connection import upsert
 from garmin_mcp.db.sync_log import log_sync_run
+from garmin_mcp.garmin_client.factory import GarminClients
 from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, StillCoolingDown
 from garmin_mcp.sync.cursor import set_cursor
 from garmin_mcp.sync.daily_categories import DailyCategorySpec
@@ -168,7 +167,7 @@ class SyncResult:
 def sync_daily_category(
     spec: DailyCategorySpec,
     rate_limited_client: RateLimitedClient,
-    garmin: Garmin,
+    clients: GarminClients,
     conn: sqlite3.Connection,
     dates: list[str],
     run_type: str,
@@ -177,7 +176,7 @@ def sync_daily_category(
 
     for cdate in dates:
         try:
-            raw = rate_limited_client.call(spec.category, spec.fetch, garmin, cdate)
+            raw = rate_limited_client.call(spec.category, spec.fetch, clients, cdate)
         except StillCoolingDown:
             result.stopped_early = True
             break
@@ -227,7 +226,7 @@ def sync_daily_category(
 def incremental_sync(
     spec: DailyCategorySpec,
     rate_limited_client: RateLimitedClient,
-    garmin: Garmin,
+    clients: GarminClients,
     conn: sqlite3.Connection,
     today: date,
     lookback_days: int = 3,
@@ -258,7 +257,7 @@ def incremental_sync(
     )
     dates = date_range(start, today)
 
-    result = sync_daily_category(spec, rate_limited_client, garmin, conn, dates, run_type="incremental_sync")
+    result = sync_daily_category(spec, rate_limited_client, clients, conn, dates, run_type="incremental_sync")
 
     boundary = result.contiguous_success_boundary
     if boundary:
@@ -269,7 +268,7 @@ def incremental_sync(
 def backfill_batch(
     spec: DailyCategorySpec,
     rate_limited_client: RateLimitedClient,
-    garmin: Garmin,
+    clients: GarminClients,
     conn: sqlite3.Connection,
     today: date,
     batch_days: int = 30,
@@ -300,7 +299,7 @@ def backfill_batch(
     # so the contiguous-success boundary lands on the oldest date reached.
     dates = date_range(end, start)
 
-    result = sync_daily_category(spec, rate_limited_client, garmin, conn, dates, run_type="backfill")
+    result = sync_daily_category(spec, rate_limited_client, clients, conn, dates, run_type="backfill")
 
     boundary = result.contiguous_success_boundary
     if boundary:

@@ -210,14 +210,14 @@ def sync_now() -> str:
     """Explicitly hit the live Garmin API to pull new data since the last
     successful sync, for every category. Rate-limited; respects any active
     cooldown from a previous 429. Never called automatically by other tools."""
-    from garmin_mcp.garmin_client.factory import build_client
+    from garmin_mcp.garmin_client.factory import build_clients
     from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimiterConfig
     from garmin_mcp.sync.runner import run_sync
 
     config = get_config()
     conn = _get_conn()
     try:
-        garmin = build_client(config)
+        clients = build_clients(config)
         rate_limited_client = RateLimitedClient(
             conn,
             RateLimiterConfig(
@@ -225,7 +225,7 @@ def sync_now() -> str:
                 max_retries=config.max_retries,
             ),
         )
-        results = run_sync(conn, garmin, rate_limited_client)
+        results = run_sync(conn, clients, rate_limited_client)
         summary = {
             category: {
                 "expected": getattr(r, "expected", None),
@@ -233,6 +233,8 @@ def sync_now() -> str:
             }
             for category, r in results.items()
         }
+        if clients.login_error is not None:
+            summary["garminconnect_login_error"] = repr(clients.login_error)
         return json.dumps(summary, indent=2)
     finally:
         conn.close()
@@ -248,14 +250,14 @@ def backfill_batch_now(batch_days: int = 30, earliest_date: str = "2000-01-01", 
     ["hrv_daily"]) instead of every category -- one of: activities,
     daily_health_metrics, sleep, hrv_daily, training_readiness,
     training_status, race_predictions, body_composition."""
-    from garmin_mcp.garmin_client.factory import build_client
+    from garmin_mcp.garmin_client.factory import build_clients
     from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimiterConfig
     from garmin_mcp.sync.runner import run_backfill
 
     config = get_config()
     conn = _get_conn()
     try:
-        garmin = build_client(config)
+        clients = build_clients(config)
         rate_limited_client = RateLimitedClient(
             conn,
             RateLimiterConfig(
@@ -265,7 +267,7 @@ def backfill_batch_now(batch_days: int = 30, earliest_date: str = "2000-01-01", 
         )
         results = run_backfill(
             conn,
-            garmin,
+            clients,
             rate_limited_client,
             batch_days=batch_days,
             earliest_date=date.fromisoformat(earliest_date),
@@ -282,6 +284,8 @@ def backfill_batch_now(batch_days: int = 30, earliest_date: str = "2000-01-01", 
             )
             for category, r in results.items()
         }
+        if clients.login_error is not None:
+            summary["garminconnect_login_error"] = repr(clients.login_error)
         return json.dumps(summary, indent=2)
     finally:
         conn.close()

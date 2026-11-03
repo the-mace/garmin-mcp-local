@@ -32,6 +32,7 @@ class Config:
     min_request_interval_seconds: float
     max_retries: int
     alert_email_to: str | None
+    api_key: str | None
     api_key_expires: str | None
 
     @classmethod
@@ -46,6 +47,7 @@ class Config:
             ),
             max_retries=int(os.environ.get("GARMIN_MAX_RETRIES", "5")),
             alert_email_to=os.environ.get("ALERT_EMAIL_TO") or None,
+            api_key=os.environ.get("GARMIN_API_KEY") or None,
             api_key_expires=os.environ.get("GARMIN_API_KEY_EXPIRES") or None,
         )
 

@@ -13,7 +13,7 @@ import traceback
 from garmin_mcp.alerting import send_alert_email
 from garmin_mcp.config import get_config
 from garmin_mcp.db.connection import init_db
-from garmin_mcp.garmin_client.factory import build_client
+from garmin_mcp.garmin_client.factory import build_clients
 from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimiterConfig
 from garmin_mcp.sync.runner import run_sync
 
@@ -35,8 +35,9 @@ def _run() -> None:
     # Only prompt for an MFA code if there's actually a terminal attached
     # (e.g. a scheduled/launchd run has none) -- otherwise input() would
     # hang or raise an unhelpful EOFError instead of the clear "run this
-    # interactively once" error build_client already raises.
-    garmin = build_client(config, interactive=sys.stdin.isatty())
+    # interactively once" error build_client already raises (now on first use
+    # of the unofficial client, not at startup).
+    clients = build_clients(config, interactive=sys.stdin.isatty())
     rate_limited_client = RateLimitedClient(
         conn,
         RateLimiterConfig(
@@ -45,12 +46,17 @@ def _run() -> None:
         ),
     )
 
-    results = run_sync(conn, garmin, rate_limited_client)
+    results = run_sync(conn, clients, rate_limited_client)
 
     for category, result in results.items():
         print(f"[{category}] {result}")
 
     conn.close()
+
+    # Categories on the official API have already been saved; surface the
+    # unofficial login failure through the crash alert in main().
+    if clients.login_error is not None:
+        raise clients.login_error
 
 
 if __name__ == "__main__":

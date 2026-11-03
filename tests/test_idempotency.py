@@ -17,6 +17,7 @@ import pytest
 
 from garmin_mcp.bulk_import.runner import import_export
 from garmin_mcp.db.connection import init_db, upsert
+from garmin_mcp.garmin_client.factory import GarminClients
 from garmin_mcp.sync.cursor import get_cursor, set_cursor
 from garmin_mcp.sync.daily_categories import DailyCategorySpec
 from garmin_mcp.sync.engine import (
@@ -437,9 +438,10 @@ def test_fill_missing_laps_fetches_once_and_marks_lap_count(conn):
     for aid, source in ((1, "api"), (2, "api"), (3, "csv_export")):
         upsert(conn, "activities", {"activity_id": aid, "begin_timestamp_utc_ms": aid, "source": source}, ["activity_id"])
     garmin = _FakeSplitsGarmin({1: [_fake_lap(1, "WARMUP"), _fake_lap(2, "ACTIVE")]})
+    clients = GarminClients(None, lambda: garmin)
 
     result = ActivitiesSyncResult()
-    fill_missing_laps(DummyRateLimitedClient(), garmin, conn, result)
+    fill_missing_laps(DummyRateLimitedClient(), clients, conn, result)
     assert sorted(garmin.calls) == [1, 2]
     assert result.laps_written == 2
 
@@ -454,7 +456,7 @@ def test_fill_missing_laps_fetches_once_and_marks_lap_count(conn):
     counts = dict(conn.execute("SELECT activity_id, lap_count FROM activities").fetchall())
     assert counts == {1: 2, 2: 0, 3: None}
 
-    fill_missing_laps(DummyRateLimitedClient(), garmin, conn, ActivitiesSyncResult())
+    fill_missing_laps(DummyRateLimitedClient(), clients, conn, ActivitiesSyncResult())
     assert sorted(garmin.calls) == [1, 2]
 
 
