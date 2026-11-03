@@ -2,6 +2,10 @@
 category (daily health metrics, sleep, HRV, training readiness/status, race
 predictions, body composition).
 
+Categories with a `fetch_range` (sleep, HRV, body composition) are fetched
+in date-range chunks when the official API is available; results are still
+recorded and resumed per date, so everything below applies either way.
+
 Every batch call records to `sync_log` how many dates were *expected*
 (requested) vs. *fetched* (successfully queried -- a day with no data is
 still a successful query, since sparse days are normal for wellness data;
@@ -145,6 +149,7 @@ class SyncResult:
     dates: list[str]
     fetched: int = 0
     failed: list[tuple[str, str]] = field(default_factory=list)
+    succeeded: list[str] = field(default_factory=list)
     stopped_early: bool = False  # hit a persisted cooldown mid-batch
 
     @property
@@ -154,14 +159,48 @@ class SyncResult:
     @property
     def contiguous_success_boundary(self) -> str | None:
         """Last date (in `dates` order) up to which every date succeeded
-        with no gap. None if the very first date failed."""
-        failed_dates = {d for d, _ in self.failed}
+        with no gap. None if the very first date failed or was never
+        attempted (a cooldown stops a batch before its remaining dates)."""
+        succeeded = set(self.succeeded)
         boundary = None
         for d in self.dates:
-            if d in failed_dates:
+            if d not in succeeded:
                 break
             boundary = d
         return boundary
+
+
+def _chunks(dates: list[str], size: int) -> list[list[str]]:
+    return [dates[i : i + size] for i in range(0, len(dates), size)]
+
+
+def _fetch_days(spec, rate_limited_client, clients, dates):
+    """Yield (cdate, raw, error) per date. Uses the spec's range fetch when
+    the official API is available, else one call per date. Lets
+    StillCoolingDown propagate so the caller can stop the batch."""
+    if spec.fetch_range is not None and getattr(clients, "personal", None) is not None:
+        for chunk in _chunks(dates, spec.max_range_days):
+            try:
+                by_date = rate_limited_client.call(spec.category, spec.fetch_range, clients, min(chunk), max(chunk))
+            except StillCoolingDown:
+                raise
+            except Exception as exc:  # noqa: BLE001 -- the whole chunk failed; record each date, keep going
+                for cdate in chunk:
+                    yield cdate, None, exc
+                continue
+            for cdate in chunk:
+                yield cdate, by_date.get(cdate), None
+        return
+
+    for cdate in dates:
+        try:
+            raw = rate_limited_client.call(spec.category, spec.fetch, clients, cdate)
+        except StillCoolingDown:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- record and keep going; never abort the whole batch silently
+            yield cdate, None, exc
+            continue
+        yield cdate, raw, None
 
 
 def sync_daily_category(
@@ -174,22 +213,20 @@ def sync_daily_category(
 ) -> SyncResult:
     result = SyncResult(category=spec.category, dates=dates)
 
-    for cdate in dates:
-        try:
-            raw = rate_limited_client.call(spec.category, spec.fetch, clients, cdate)
-        except StillCoolingDown:
-            result.stopped_early = True
-            break
-        except Exception as exc:  # noqa: BLE001 -- record and keep going; never abort the whole batch silently
-            result.failed.append((cdate, repr(exc)))
-            continue
-
-        result.fetched += 1
-        row = spec.map_row(cdate, raw)
-        if row:
-            upsert(conn, spec.table, row, ["calendar_date"])
-            if spec.extra:
-                spec.extra(conn, cdate, raw)
+    try:
+        for cdate, raw, error in _fetch_days(spec, rate_limited_client, clients, dates):
+            if error is not None:
+                result.failed.append((cdate, repr(error)))
+                continue
+            result.fetched += 1
+            result.succeeded.append(cdate)
+            row = spec.map_row(cdate, raw)
+            if row:
+                upsert(conn, spec.table, row, ["calendar_date"])
+                if spec.extra:
+                    spec.extra(conn, cdate, raw)
+    except StillCoolingDown:
+        result.stopped_early = True
 
     conn.commit()
 

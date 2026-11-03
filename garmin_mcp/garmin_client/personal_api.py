@@ -90,6 +90,25 @@ class PersonalApiClient:
         # the mapper's "last entry is the latest weigh-in" holds.
         return {"dateWeightList": sorted(entries, key=lambda e: e.get("date") or 0)}
 
+    # Range variants return {calendarDate: payload}, with each payload shaped
+    # like the single-day method's so the same mapper applies. Days with no
+    # data are simply absent.
+
+    def get_sleep_range(self, start: str, end: str) -> dict[str, dict]:
+        days = self._get_json("/sleep-service/sleep/dailySleepSummariesByDate", {"startDate": start, "endDate": end})
+        return {d["calendarDate"]: d for d in days or [] if d.get("calendarDate")}
+
+    def get_hrv_range(self, start: str, end: str) -> dict[str, dict]:
+        body = self._get_json(f"/hrv-service/hrv/daily/{start}/{end}") or {}
+        return {s["calendarDate"]: s for s in body.get("hrvSummaries") or [] if s.get("calendarDate")}
+
+    def get_body_composition_range(self, start: str, end: str) -> dict[str, dict]:
+        entries = self._get_json(f"/weight-service/weight/all/{start}/{end}") or []
+        by_day: dict[str, list] = {}
+        for entry in sorted(entries, key=lambda e: e.get("date") or 0):
+            by_day.setdefault(entry.get("calendarDate"), []).append(entry)
+        return {day: {"dateWeightList": items} for day, items in by_day.items() if day}
+
     def get_activities(self, start: int, limit: int) -> list[dict]:
         return self._get_json(
             "/activitylist-service/activities/search/activities", {"start": start, "limit": limit}

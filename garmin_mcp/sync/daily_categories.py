@@ -26,6 +26,10 @@ class DailyCategorySpec:
     fetch: Callable[["GarminClients", str], Any]
     map_row: Callable[[str, Any], dict | None]
     extra: Callable[[Any, str, Any], None] | None = None  # (conn, cdate, raw) -> None, for child tables
+    # Official-API only: (clients, start, end) -> {calendarDate: raw}, one
+    # call per chunk of up to `max_range_days` instead of one per day.
+    fetch_range: Callable[["GarminClients", str, str], dict[str, Any]] | None = None
+    max_range_days: int = 31
 
 
 def _map_daily_health(cdate: str, raw: dict) -> dict | None:
@@ -293,13 +297,24 @@ def _garminconnect_only(method: str) -> Callable[[GarminClients, str], Any]:
     return fetch
 
 
+def _official_range(method: str) -> Callable[[GarminClients, str, str], dict[str, Any]]:
+    def fetch_range(clients: GarminClients, start: str, end: str) -> dict[str, Any]:
+        return getattr(clients.personal, method)(start, end)
+
+    return fetch_range
+
+
+# Daily health stays per day: the official range endpoint
+# (/usersummary-service/v2/dailysummaries) reports different values for the
+# same day (step-only distance, slightly different min/max HR, no direct
+# stress duration), so switching would change what the columns mean.
 def build_specs() -> list[DailyCategorySpec]:
     return [
         DailyCategorySpec("daily_health_metrics", "daily_health_metrics", _official_first("get_user_summary"), _map_daily_health, _extra_stress_periods),
-        DailyCategorySpec("sleep", "sleep", _official_first("get_sleep_data"), _map_sleep),
-        DailyCategorySpec("hrv_daily", "hrv_daily", _official_first("get_hrv_data"), _map_hrv),
+        DailyCategorySpec("sleep", "sleep", _official_first("get_sleep_data"), _map_sleep, fetch_range=_official_range("get_sleep_range")),
+        DailyCategorySpec("hrv_daily", "hrv_daily", _official_first("get_hrv_data"), _map_hrv, fetch_range=_official_range("get_hrv_range")),
         DailyCategorySpec("training_readiness", "training_readiness", _garminconnect_only("get_training_readiness"), _map_training_readiness),
         DailyCategorySpec("training_status", "training_status", _garminconnect_only("get_training_status"), _map_training_status),
         DailyCategorySpec("race_predictions", "race_predictions", _fetch_race_predictions, _map_race_predictions),
-        DailyCategorySpec("body_composition", "body_composition", _official_first("get_body_composition"), _map_body_composition),
+        DailyCategorySpec("body_composition", "body_composition", _official_first("get_body_composition"), _map_body_composition, fetch_range=_official_range("get_body_composition_range")),
     ]

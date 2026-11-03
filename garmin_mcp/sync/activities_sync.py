@@ -24,6 +24,12 @@ key fall back to `garminconnect`'s `get_activity_splits`. `fill_missing_laps`
 fetches laps for API-sourced activities whose `lap_count` is still NULL
 (the marker for "laps never fetched"), a capped number per run so a large
 backlog drains over several syncs instead of one long burst.
+
+Deletions: Connect has no "deleted since" feed, so incremental sync infers
+them. Every local API-sourced activity newer than the oldest one on the
+pages just fetched should have appeared on those pages; any that didn't was
+deleted in Connect (e.g. a Peloton duplicate removed by hand) and is
+removed locally, laps and all, via ON DELETE CASCADE.
 """
 
 from __future__ import annotations
@@ -45,6 +51,10 @@ from garmin_mcp.sync.cursor import get_cursor, set_cursor
 from garmin_mcp.sync.fit_laps import parse_fit_laps
 
 CATEGORY = "activities"
+
+# More missing activities than this in one run looks like a truncated or
+# filtered API response rather than hand-deleted duplicates; skip and warn.
+MAX_DELETIONS_PER_RUN = 5
 
 
 def _map_live_activity(act: dict) -> dict | None:
@@ -124,6 +134,7 @@ class ActivitiesSyncResult:
     activities_written: int = 0
     laps_activities_filled: int = 0
     laps_written: int = 0
+    deleted_activity_ids: list[int] = None
     reached_known_activity: bool = False
     reached_end_of_history: bool = False
     stopped_early: bool = False
@@ -132,6 +143,8 @@ class ActivitiesSyncResult:
     def __post_init__(self):
         if self.warnings is None:
             self.warnings = []
+        if self.deleted_activity_ids is None:
+            self.deleted_activity_ids = []
 
 
 def _activity_list_client(clients: GarminClients):
@@ -185,6 +198,37 @@ def fill_missing_laps(
         result.laps_written += len(laps)
 
 
+def remove_deleted_activities(
+    conn: sqlite3.Connection,
+    seen_ids: set[int],
+    oldest_seen_ms: int,
+    result: ActivitiesSyncResult,
+) -> None:
+    """Delete local API-sourced activities that started after
+    `oldest_seen_ms` but weren't in the freshly fetched list. Strictly
+    after: another activity sharing the boundary timestamp may sit on the
+    next, unfetched page. Bulk-export rows are never touched."""
+    missing = conn.execute(
+        """
+        SELECT activity_id, name FROM activities
+        WHERE source = 'api' AND begin_timestamp_utc_ms > ?
+        """,
+        (oldest_seen_ms,),
+    ).fetchall()
+    missing = [(aid, name) for aid, name in missing if aid not in seen_ids]
+    if not missing:
+        return
+    if len(missing) > MAX_DELETIONS_PER_RUN:
+        result.warnings.append(
+            f"{len(missing)} recent activities missing from Garmin's list; over the "
+            f"limit of {MAX_DELETIONS_PER_RUN}, so none were deleted locally"
+        )
+        return
+    conn.executemany("DELETE FROM activities WHERE activity_id = ?", [(aid,) for aid, _ in missing])
+    conn.commit()
+    result.deleted_activity_ids.extend(aid for aid, _ in missing)
+
+
 def incremental_sync_activities(
     rate_limited_client: RateLimitedClient,
     clients: GarminClients,
@@ -196,6 +240,8 @@ def incremental_sync_activities(
     is seen (caught up) or max_pages is hit."""
     result = ActivitiesSyncResult()
     start = 0
+    seen_ids: set[int] = set()
+    oldest_seen_ms: int | None = None
 
     for _ in range(max_pages):
         try:
@@ -219,6 +265,9 @@ def incremental_sync_activities(
             row = _map_live_activity(act)
             if not row:
                 continue
+            seen_ids.add(row["activity_id"])
+            if row["begin_timestamp_utc_ms"] is not None:
+                oldest_seen_ms = min(oldest_seen_ms or row["begin_timestamp_utc_ms"], row["begin_timestamp_utc_ms"])
             existing = conn.execute(
                 "SELECT 1 FROM activities WHERE activity_id = ?", (row["activity_id"],)
             ).fetchone()
@@ -235,6 +284,8 @@ def incremental_sync_activities(
         start += page_size
 
     if not result.stopped_early:
+        if oldest_seen_ms is not None:
+            remove_deleted_activities(conn, seen_ids, oldest_seen_ms, result)
         fill_missing_laps(rate_limited_client, clients, conn, result)
 
     status = "success"
@@ -244,6 +295,9 @@ def incremental_sync_activities(
         warning = (warning + "; " if warning else "") + "stopped early: active rate-limit cooldown"
     elif result.warnings:
         status = "partial"
+    if result.deleted_activity_ids:
+        note = f"removed {len(result.deleted_activity_ids)} activity(ies) deleted in Garmin Connect: {result.deleted_activity_ids}"
+        warning = (warning + "; " if warning else "") + note
 
     log_sync_run(
         conn,

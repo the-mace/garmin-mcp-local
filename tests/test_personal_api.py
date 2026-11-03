@@ -241,3 +241,147 @@ def test_laps_come_from_fit_and_fall_back_to_splits_when_no_file(conn):
     counts = dict(conn.execute("SELECT activity_id, lap_count FROM activities").fetchall())
     assert counts == {1: 3, 2: 1}
     assert result.laps_written == 4
+
+
+def test_range_methods_key_payloads_by_day():
+    def handler(request):
+        path = request.url.path
+        if path.startswith("/weight-service"):
+            return httpx.Response(200, json=[
+                {"calendarDate": "2026-01-02", "date": 20, "weight": 70000.0},
+                {"calendarDate": "2026-01-02", "date": 10, "weight": 71000.0},
+                {"calendarDate": "2026-01-05", "date": 50, "weight": 69000.0},
+            ])
+        if path.startswith("/hrv-service"):
+            return httpx.Response(200, json={"hrvSummaries": [{"calendarDate": "2026-01-02", "lastNightAvg": 40}]})
+        return httpx.Response(200, json=[{"calendarDate": "2026-01-03", "deepSleepSeconds": 3600}])
+
+    client, _ = _api(handler)
+    weights = client.get_body_composition_range("2026-01-01", "2026-01-31")
+    assert [e["date"] for e in weights["2026-01-02"]["dateWeightList"]] == [10, 20]
+    assert set(weights) == {"2026-01-02", "2026-01-05"}
+    assert client.get_hrv_range("2026-01-01", "2026-01-31") == {"2026-01-02": {"calendarDate": "2026-01-02", "lastNightAvg": 40}}
+    assert set(client.get_sleep_range("2026-01-01", "2026-01-31")) == {"2026-01-03"}
+
+
+class FakeRangePersonal:
+    def __init__(self, fail_from: str | None = None):
+        self.ranges: list[tuple[str, str]] = []
+        self.fail_from = fail_from
+
+    def get_hrv_range(self, start, end):
+        self.ranges.append((start, end))
+        if self.fail_from and start >= self.fail_from:
+            raise RuntimeError("boom")
+        return {"2026-01-02": {"lastNightAvg": 40, "status": "BALANCED"}}
+
+    def get_hrv_data(self, cdate):
+        raise AssertionError("per-day fetch used despite a range endpoint")
+
+
+def _days(start: dt.date, n: int) -> list[str]:
+    return [(start + dt.timedelta(days=i)).isoformat() for i in range(n)]
+
+
+def test_range_categories_fetch_31_day_chunks_not_days(conn):
+    personal = FakeRangePersonal()
+    dates = _days(dt.date(2026, 1, 1), 40)
+
+    result = sync_daily_category(_spec("hrv_daily"), PassThroughLimiter(), GarminClients(personal, FakeGarmin), conn, dates, "backfill")
+
+    assert personal.ranges == [("2026-01-01", "2026-01-31"), ("2026-02-01", "2026-02-09")]
+    assert result.fetched == 40 and not result.failed
+    assert [tuple(r) for r in conn.execute("SELECT calendar_date, last_night_avg FROM hrv_daily")] == [("2026-01-02", 40)]
+
+
+def test_range_chunks_follow_backfill_order_and_a_failed_chunk_fails_its_days(conn):
+    personal = FakeRangePersonal(fail_from="2025-01-01")
+    dates = list(reversed(_days(dt.date(2025, 12, 20), 20)))
+
+    result = sync_daily_category(_spec("hrv_daily"), PassThroughLimiter(), GarminClients(personal, FakeGarmin), conn, dates, "backfill")
+
+    assert personal.ranges == [("2025-12-20", "2026-01-08")]
+    assert len(result.failed) == 20
+    assert result.contiguous_success_boundary is None
+
+
+def test_range_fetch_is_skipped_without_an_api_key(conn):
+    garmin = FakeGarmin()
+    garmin.get_hrv_data = lambda cdate: (garmin.calls.append(cdate), {"hrvSummary": {"lastNightAvg": 1}})[1]
+    dates = _days(dt.date(2026, 1, 1), 3)
+
+    sync_daily_category(_spec("hrv_daily"), PassThroughLimiter(), GarminClients(None, lambda: garmin), conn, dates, "incremental_sync")
+
+    assert garmin.calls == dates
+
+
+def _api_activity(conn, aid, begin_ms, source="api"):
+    upsert(conn, "activities", {"activity_id": aid, "begin_timestamp_utc_ms": begin_ms, "source": source}, ["activity_id"])
+
+
+def test_activities_deleted_in_connect_are_removed_with_their_laps(conn):
+    from garmin_mcp.sync.activities_sync import remove_deleted_activities
+
+    _api_activity(conn, 1, 1000)
+    _api_activity(conn, 2, 2000)
+    _api_activity(conn, 3, 3000)
+    _api_activity(conn, 4, 2500, source="csv_export")
+    _api_activity(conn, 5, 500)
+    upsert(conn, "activity_laps", {"activity_id": 2, "lap_index": 1}, ["activity_id", "lap_index"])
+
+    result = ActivitiesSyncResult()
+    remove_deleted_activities(conn, seen_ids={1, 3}, oldest_seen_ms=1000, result=result)
+
+    remaining = {r[0] for r in conn.execute("SELECT activity_id FROM activities")}
+    assert remaining == {1, 3, 4, 5}
+    assert result.deleted_activity_ids == [2]
+    assert conn.execute("SELECT COUNT(*) FROM activity_laps").fetchone()[0] == 0
+
+
+def test_activity_sharing_the_oldest_timestamp_is_kept(conn):
+    from garmin_mcp.sync.activities_sync import remove_deleted_activities
+
+    _api_activity(conn, 1, 1000)
+    _api_activity(conn, 2, 1000)
+    remove_deleted_activities(conn, seen_ids={1}, oldest_seen_ms=1000, result=ActivitiesSyncResult())
+    assert conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0] == 2
+
+
+def test_mass_disappearance_is_not_deleted(conn):
+    from garmin_mcp.sync.activities_sync import (
+        MAX_DELETIONS_PER_RUN,
+        remove_deleted_activities,
+    )
+
+    for aid in range(1, MAX_DELETIONS_PER_RUN + 3):
+        _api_activity(conn, aid, 1000 + aid)
+    result = ActivitiesSyncResult()
+    remove_deleted_activities(conn, seen_ids={1}, oldest_seen_ms=1001, result=result)
+
+    assert conn.execute("SELECT COUNT(*) FROM activities").fetchone()[0] == MAX_DELETIONS_PER_RUN + 2
+    assert result.deleted_activity_ids == [] and result.warnings
+
+
+class ListOnlyPersonal(FakePersonal):
+    def __init__(self, listing):
+        super().__init__()
+        self.listing = listing
+
+    def get_activities(self, start, limit):
+        return self.listing[start : start + limit]
+
+
+def test_incremental_sync_removes_a_duplicate_deleted_in_connect(conn):
+    from garmin_mcp.sync.activities_sync import incremental_sync_activities
+
+    for aid, begin in ((10, 1000), (11, 2000), (12, 3000)):
+        _api_activity(conn, aid, begin)
+        conn.execute("UPDATE activities SET lap_count = 0 WHERE activity_id = ?", (aid,))
+    conn.commit()
+    listing = [{"activityId": 12, "beginTimestamp": 3000}, {"activityId": 10, "beginTimestamp": 1000}]
+
+    result = incremental_sync_activities(PassThroughLimiter(), GarminClients(ListOnlyPersonal(listing), FakeGarmin), conn, page_size=2)
+
+    assert result.deleted_activity_ids == [11]
+    log = conn.execute("SELECT status, warning FROM sync_log WHERE category = 'activities'").fetchone()
+    assert log[0] == "success" and "[11]" in log[1]

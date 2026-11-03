@@ -477,3 +477,18 @@ def test_apply_schema_adds_new_lap_columns_to_old_table(tmp_path):
     cols = {r[1] for r in raw.execute("PRAGMA table_info(activity_laps)")}
     assert {"intensity_type", "workout_step_index"} <= cols
     raw.close()
+
+
+def test_cooldown_before_any_fetch_does_not_advance_the_backfill_cursor(conn):
+    from garmin_mcp.garmin_client.rate_limiter import StillCoolingDown
+    from garmin_mcp.sync.engine import backfill_batch
+
+    class CoolingDown:
+        def call(self, category, func, *args, **kwargs):
+            raise StillCoolingDown(category, 60)
+
+    set_cursor(conn, "sleep", "backward", "date", "2026-03-01")
+    result = backfill_batch(_spec_with_fetch(lambda c, d: {"score": 1}), CoolingDown(), None, conn, date(2026, 6, 1))
+
+    assert result.stopped_early and result.fetched == 0
+    assert get_cursor(conn, "sleep", "backward") == "2026-03-01"

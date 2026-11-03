@@ -100,6 +100,24 @@ consecutive local gaps** (missing row or null shell) until it hits a day
 with real metrics, capped at 21 days (`GAP_REFETCH_MAX_DAYS`), then
 re-fetches that range through today.
 
+**Date-range fetches:** with an API key, sleep, HRV and body composition
+are fetched in one call per 31-day chunk (Garmin's limit) instead of one
+call per day, so a 30-day backfill batch is a single request. Daily health
+stays one call per day: the official range endpoint reports different
+values for the same day (step-only distance, slightly different min/max HR),
+which would change what those columns mean. Training readiness, training
+status and race predictions stay per day on `garminconnect`.
+
+**Deleted activities:** Connect has no feed of deletions, so incremental
+sync infers them. Any local API-sourced activity newer than the oldest one
+on the activity pages just fetched (the latest 50 or more), but missing
+from them, was deleted in Connect, for example a Peloton duplicate removed
+by hand. It is deleted locally with its laps, and the `sync_log` row notes
+which IDs were removed. If more than 5 disappear in one run, nothing is
+deleted and the run is marked partial, since that looks like a bad API
+response rather than hand-deleted duplicates. Activities imported from the
+bulk export are never removed this way.
+
 Every API call in this project goes through one rate-limited wrapper
 (`garmin_mcp/garmin_client/rate_limiter.py`) that:
 - enforces a minimum delay between requests (`GARMIN_MIN_REQUEST_INTERVAL_SECONDS`),
