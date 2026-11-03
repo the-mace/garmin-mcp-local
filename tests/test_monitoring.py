@@ -9,12 +9,18 @@ notices it happened.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import pytest
 
 from garmin_mcp.db.connection import init_db
-from garmin_mcp.monitoring import check_backfill, check_run_type, check_sync, expected_sync_categories
+from garmin_mcp.monitoring import (
+    check_api_key_expiry,
+    check_backfill,
+    check_run_type,
+    check_sync,
+    expected_sync_categories,
+)
 
 MAX_AGE = timedelta(hours=27)
 NOW = datetime(2026, 7, 14, 8, 0, 0)
@@ -151,3 +157,33 @@ def test_backfill_batch_logs_complete_once_past_earliest_date(conn):
     ).fetchone()[0]
     assert status == "complete"
     assert check_backfill(conn, max_age=MAX_AGE, now=NOW) == []
+
+
+EXPIRY = "2027-11-03"
+
+
+def test_api_key_expiry_unset_is_silent():
+    assert check_api_key_expiry(None, today=date(2027, 11, 3)) == []
+
+
+@pytest.mark.parametrize("days_left", [31, 29, 15, 8])
+def test_api_key_expiry_quiet_between_milestones(days_left):
+    assert check_api_key_expiry(EXPIRY, today=date(2027, 11, 3) - timedelta(days=days_left)) == []
+
+
+@pytest.mark.parametrize("days_left", [30, 14, 7, 3, 1, 0])
+def test_api_key_expiry_warns_on_milestones(days_left):
+    issues = check_api_key_expiry(EXPIRY, today=date(2027, 11, 3) - timedelta(days=days_left))
+    assert [(i.category, i.problem) for i in issues] == [("api_key", "expiring")]
+    assert f"{days_left} day(s) left" in issues[0].detail
+
+
+@pytest.mark.parametrize("days_past", [1, 40])
+def test_api_key_expired_warns_every_run(days_past):
+    issues = check_api_key_expiry(EXPIRY, today=date(2027, 11, 3) + timedelta(days=days_past))
+    assert [(i.category, i.problem) for i in issues] == [("api_key", "expired")]
+
+
+def test_api_key_expiry_bad_date_is_reported_not_raised():
+    issues = check_api_key_expiry("11/3/27", today=date(2027, 1, 1))
+    assert [(i.category, i.problem) for i in issues] == [("api_key", "invalid")]

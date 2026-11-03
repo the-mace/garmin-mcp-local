@@ -174,6 +174,9 @@ is the alert itself, sent only when there's actually something to report.
   most recent run per category and per `run_type`, and emails one summary
   if anything's stale (>27h old, one day of slack over the daily cadence)
   or unsuccessful. It sends nothing when everything's healthy.
+  It also warns ahead of the Garmin API key's expiry when
+  `GARMIN_API_KEY_EXPIRES` (YYYY-MM-DD) is set: on the 30, 14, 7, 3, 2, 1
+  and 0 days-left marks, then on every run once the key has expired.
 
 Leaving `ALERT_EMAIL_TO` unset disables alerting entirely (failures are
 still visible in `logs/*.error.log` and `sync_log`, just not pushed to

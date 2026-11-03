@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from garmin_mcp.sync.daily_categories import build_specs
 
@@ -145,3 +145,25 @@ def check_backfill(conn: sqlite3.Connection, *, max_age: timedelta, now: datetim
     latest = _latest_per_category(conn, "backfill")
     categories = {row["category"] for row in seen if latest[row["category"]]["status"] != "complete"}
     return check_run_type(conn, run_type="backfill", categories=categories, max_age=max_age, now=now)
+
+
+# Garmin caps personal API keys at a one-year lifetime. The watchdog is
+# stateless and runs twice a day, so warn only on milestone days rather than
+# every run for a month; once expired, warn on every run.
+API_KEY_WARN_DAYS = (30, 14, 7, 3, 2, 1, 0)
+
+
+def check_api_key_expiry(expires: str | None, *, today: date | None = None) -> list[WatchdogIssue]:
+    if not expires:
+        return []
+    try:
+        expiry = date.fromisoformat(expires)
+    except ValueError:
+        return [WatchdogIssue("config", "api_key", "invalid", f"GARMIN_API_KEY_EXPIRES={expires!r} is not YYYY-MM-DD")]
+
+    days_left = (expiry - (today or date.today())).days
+    if days_left < 0:
+        return [WatchdogIssue("config", "api_key", "expired", f"Garmin API key expired on {expiry}; create a new one and update .env")]
+    if days_left in API_KEY_WARN_DAYS:
+        return [WatchdogIssue("config", "api_key", "expiring", f"Garmin API key expires on {expiry} ({days_left} day(s) left); create a new one and update .env")]
+    return []
