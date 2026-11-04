@@ -21,6 +21,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from garmin_mcp.sync.daily_categories import build_specs
+from garmin_mcp.sync.engine import day_has_filled_data
 
 
 @dataclass(frozen=True)
@@ -167,3 +168,27 @@ def check_api_key_expiry(expires: str | None, *, today: date | None = None) -> l
     if days_left in API_KEY_WARN_DAYS:
         return [WatchdogIssue("config", "api_key", "expiring", f"Garmin API key expires on {expiry} ({days_left} day(s) left); create a new one and update .env")]
     return []
+
+
+def check_connect_upload(conn: sqlite3.Connection, *, today: date | None = None) -> list[WatchdogIssue]:
+    """Flag when last night's sleep is still missing after the sync ran.
+
+    Sync can succeed cleanly while Garmin Connect itself has nothing new,
+    because the phone app stopped syncing the watch in the background.
+    Sleep is the reliable tell: a night without it almost always means
+    the watch's data never reached Connect, and the sync's own status
+    can't show that.
+    """
+    night = (today or date.today()).isoformat()
+    if day_has_filled_data(conn, "sleep", night):
+        return []
+    return [
+        WatchdogIssue(
+            "connect",
+            "sleep",
+            "not_uploaded",
+            f"no sleep data for the night ending {night}. The watch probably hasn't synced "
+            "to Garmin Connect; open the Connect app on your phone, then run garmin-mcp-sync "
+            "(or wait for the next scheduled sync).",
+        )
+    ]

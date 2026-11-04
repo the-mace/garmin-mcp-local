@@ -13,10 +13,11 @@ from datetime import date, datetime, timedelta
 
 import pytest
 
-from garmin_mcp.db.connection import init_db
+from garmin_mcp.db.connection import init_db, upsert
 from garmin_mcp.monitoring import (
     check_api_key_expiry,
     check_backfill,
+    check_connect_upload,
     check_run_type,
     check_sync,
     expected_sync_categories,
@@ -187,3 +188,24 @@ def test_api_key_expired_warns_every_run(days_past):
 def test_api_key_expiry_bad_date_is_reported_not_raised():
     issues = check_api_key_expiry("11/3/27", today=date(2027, 1, 1))
     assert [(i.category, i.problem) for i in issues] == [("api_key", "invalid")]
+
+
+def test_connect_upload_flags_missing_sleep_for_last_night(conn):
+    upsert(conn, "sleep", {"calendar_date": "2026-07-13", "overall_score": 80, "source": "api"}, ["calendar_date"])
+
+    issues = check_connect_upload(conn, today=date(2026, 7, 14))
+
+    assert [(i.run_type, i.category, i.problem) for i in issues] == [("connect", "sleep", "not_uploaded")]
+    assert "2026-07-14" in issues[0].detail
+
+
+def test_connect_upload_treats_null_sleep_shell_as_not_uploaded(conn):
+    upsert(conn, "sleep", {"calendar_date": "2026-07-14", "source": "api"}, ["calendar_date"])
+
+    assert len(check_connect_upload(conn, today=date(2026, 7, 14))) == 1
+
+
+def test_connect_upload_ok_when_last_night_has_sleep(conn):
+    upsert(conn, "sleep", {"calendar_date": "2026-07-14", "deep_sleep_s": 3600, "source": "api"}, ["calendar_date"])
+
+    assert check_connect_upload(conn, today=date(2026, 7, 14)) == []

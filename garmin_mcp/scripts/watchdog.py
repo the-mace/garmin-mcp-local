@@ -1,7 +1,8 @@
 """CLI: check `sync_log` for a missed scheduled run or a non-success status
 (sync/backfill can fail without crashing -- see garmin_mcp/monitoring.py --
-so this is what actually catches that, not just a crashed process), and
-warn ahead of the Garmin API key's expiry date. Sends
+so this is what actually catches that, not just a crashed process), flag
+a night with no sleep data (the phone stopped syncing the watch to Garmin
+Connect), and warn ahead of the Garmin API key's expiry date. Sends
 one alert email if anything's wrong; sends nothing on a clean check, since
 the point is no outbound traffic at all on the happy path.
 
@@ -16,7 +17,7 @@ from datetime import timedelta
 from garmin_mcp.alerting import send_alert_email
 from garmin_mcp.config import get_config
 from garmin_mcp.db.connection import init_db
-from garmin_mcp.monitoring import check_api_key_expiry, check_backfill, check_sync
+from garmin_mcp.monitoring import check_api_key_expiry, check_backfill, check_connect_upload, check_sync
 
 # Both jobs are scheduled daily; this allows one full missed day of slack
 # beyond that cadence before flagging staleness.
@@ -26,7 +27,7 @@ MAX_AGE = timedelta(hours=27)
 def main() -> None:
     config = get_config()
     conn = init_db(config.db_path)
-    issues = check_sync(conn, max_age=MAX_AGE) + check_backfill(conn, max_age=MAX_AGE)
+    issues = check_sync(conn, max_age=MAX_AGE) + check_backfill(conn, max_age=MAX_AGE) + check_connect_upload(conn)
     conn.close()
     issues += check_api_key_expiry(config.api_key_expires)
 

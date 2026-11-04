@@ -219,6 +219,10 @@ is the alert itself, sent only when there's actually something to report.
   It also warns ahead of the Garmin API key's expiry when
   `GARMIN_API_KEY_EXPIRES` (YYYY-MM-DD) is set: on the 30, 14, 7, 3, 2, 1
   and 0 days-left marks, then on every run once the key has expired.
+  It also flags a stalled Garmin Connect upload. If there's still no
+  sleep data for last night after the sync, the phone app has usually
+  stopped syncing the watch in the background, even though every sync
+  run succeeded. (A night without the watch on triggers it too.)
 
 Leaving `ALERT_EMAIL_TO` unset disables alerting entirely (failures are
 still visible in `logs/*.error.log` and `sync_log`, just not pushed to
