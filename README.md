@@ -100,6 +100,11 @@ consecutive local gaps** (missing row or null shell) until it hits a day
 with real metrics, capped at 21 days (`GAP_REFETCH_MAX_DAYS`), then
 re-fetches that range through today.
 
+**Settle window:** a day synced before the phone finished uploading it holds
+partial totals and so doesn't count as a gap. Every incremental run also
+re-fetches the two days before the cursor (`SETTLE_DAYS`), filled or not,
+so a late upload replaces those partial numbers.
+
 **Date-range fetches:** with an API key, sleep, HRV and body composition
 are fetched in one call per 31-day chunk (Garmin's limit) instead of one
 call per day, so a 30-day backfill batch is a single request. Daily health

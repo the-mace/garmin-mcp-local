@@ -45,6 +45,12 @@ from garmin_mcp.sync.daily_categories import DailyCategorySpec
 # unbounded re-fetch when a category is legitimately sparse for weeks.
 GAP_REFETCH_MAX_DAYS = 21
 
+# Days before the cursor that every incremental run re-fetches even when
+# they already hold data. A day captured before the phone finished
+# uploading it (a few hundred steps instead of the full day's total)
+# looks "filled", so the gap walk-back alone would never correct it.
+SETTLE_DAYS = 2
+
 # A day counts as "filled" if any of these columns is non-NULL. Empty API
 # shells (calendar_date only / all metrics null) and missing rows are gaps.
 _FILLED_ANY_COLUMNS: dict[str, tuple[str, ...]] = {
@@ -268,12 +274,15 @@ def incremental_sync(
     today: date,
     lookback_days: int = 3,
     max_gap_days: int = GAP_REFETCH_MAX_DAYS,
+    settle_days: int = SETTLE_DAYS,
 ) -> SyncResult:
     """Sync forward from the last successful cursor through today.
 
     Re-fetches the cursor date itself (not cursor+1) so a day whose data
     finished landing after we last synced it (e.g. an overnight sleep
-    record uploaded the next morning) gets refreshed too.
+    record uploaded the next morning) gets refreshed too, along with the
+    ``settle_days`` before it, so a day first synced with partial totals
+    is corrected once the rest of it reaches Connect.
 
     Also walks back through local empty/missing days (up to
     ``max_gap_days``) until a filled day is found, so delayed Connect
@@ -283,7 +292,9 @@ def incremental_sync(
 
     cursor = get_cursor(conn, spec.category, "forward")
     cursor_start = (
-        date.fromisoformat(cursor) if cursor else today - timedelta(days=lookback_days)
+        date.fromisoformat(cursor) - timedelta(days=settle_days)
+        if cursor
+        else today - timedelta(days=lookback_days)
     )
     start = gap_refetch_start(
         conn,

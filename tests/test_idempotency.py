@@ -408,6 +408,42 @@ def test_incremental_sync_refetches_gap_range(conn):
     assert get_cursor(conn, "hrv_daily", "forward") == "2026-07-31"
 
 
+def test_incremental_sync_refreshes_partially_filled_days_before_cursor(conn):
+    # The morning run stored a partial day before the phone uploaded the
+    # rest; the cursor then moved past it. It must still be re-fetched.
+    set_cursor(conn, "daily_health_metrics", "forward", "date", "2026-03-11")
+    for d, steps in (("2026-03-08", 8000), ("2026-03-09", 7000), ("2026-03-10", 300), ("2026-03-11", 50)):
+        upsert(
+            conn,
+            "daily_health_metrics",
+            {"calendar_date": d, "total_steps": steps, "resting_hr": 50, "source": "api"},
+            ["calendar_date"],
+        )
+
+    fetched_dates: list[str] = []
+
+    def fetch(garmin, cdate):
+        fetched_dates.append(cdate)
+        return {"totalSteps": 6000, "restingHeartRate": 50}
+
+    from garmin_mcp.sync.daily_categories import _map_daily_health
+
+    spec = DailyCategorySpec(
+        category="daily_health_metrics",
+        table="daily_health_metrics",
+        fetch=fetch,
+        map_row=_map_daily_health,
+    )
+    incremental_sync(spec, DummyRateLimitedClient(), None, conn, today=date(2026, 3, 11), settle_days=2)
+
+    assert fetched_dates == ["2026-03-09", "2026-03-10", "2026-03-11"]
+    steps = conn.execute(
+        "SELECT total_steps FROM daily_health_metrics WHERE calendar_date = '2026-03-10'"
+    ).fetchone()[0]
+    assert steps == 6000
+    assert get_cursor(conn, "daily_health_metrics", "forward") == "2026-03-11"
+
+
 class _FakeSplitsGarmin:
     def __init__(self, laps_by_activity):
         self.laps_by_activity = laps_by_activity
