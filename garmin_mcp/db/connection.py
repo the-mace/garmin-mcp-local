@@ -20,6 +20,14 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
+def connect_readonly(db_path: str | Path) -> sqlite3.Connection:
+    """Open the cache so SQLite itself rejects every write, whatever the SQL text."""
+    conn = sqlite3.connect(f"{Path(db_path).resolve().as_uri()}?mode=ro", uri=True)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA query_only = ON")
+    return conn
+
+
 # CREATE TABLE IF NOT EXISTS won't add columns to a table an older schema
 # already created, so columns added later are listed here and ALTERed in.
 _ADDED_COLUMNS = {

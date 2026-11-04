@@ -15,10 +15,12 @@ from datetime import date, datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 from garmin_mcp.config import get_config
-from garmin_mcp.db.connection import connect
+from garmin_mcp.db.connection import connect, connect_readonly
 
 mcp = FastMCP("garmin-mcp-local")
 
+# Only a friendly early error. The read-only connection is what actually
+# blocks writes: a prefix test passes "WITH x AS (SELECT 1) DELETE FROM ...".
 _READ_ONLY_SQL_PREFIXES = ("select", "with", "pragma table_info", "explain")
 
 
@@ -195,7 +197,10 @@ def execute_sql(query: str) -> str:
     normalized = query.strip().lower()
     if not normalized.startswith(_READ_ONLY_SQL_PREFIXES):
         return json.dumps({"error": "only SELECT/WITH/EXPLAIN/PRAGMA table_info statements are allowed"})
-    conn = _get_conn()
+    try:
+        conn = connect_readonly(get_config().db_path)
+    except sqlite3.Error as exc:
+        return json.dumps({"error": str(exc)})
     try:
         cur = conn.execute(query)
         return json.dumps(_rows_to_dicts(cur), indent=2, default=str)
