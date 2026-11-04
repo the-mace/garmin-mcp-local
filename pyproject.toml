@@ -8,7 +8,7 @@ dependencies = [
     "garmin-fit-sdk>=21.218.0",
     "garminconnect>=0.3.6",
     "httpx>=0.28.1",
-    "mcp>=1.28.1,<2",
+    "mcp>=2.3.0,<3",
     "python-dotenv>=1.0.1",
 ]
 

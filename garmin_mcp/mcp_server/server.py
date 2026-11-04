@@ -12,12 +12,12 @@ import json
 import sqlite3
 from datetime import date, datetime, timezone
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.mcpserver import MCPServer
 
 from garmin_mcp.config import get_config
 from garmin_mcp.db.connection import connect, connect_readonly
 
-mcp = FastMCP("garmin-mcp-local")
+mcp = MCPServer("garmin-mcp-local")
 
 # Only a friendly early error. The read-only connection is what actually
 # blocks writes: a prefix test passes "WITH x AS (SELECT 1) DELETE FROM ...".
