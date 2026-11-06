@@ -232,6 +232,28 @@ loop with a local-only design, which is the tradeoff for not running a
 regular external heartbeat. Scheduling it twice a day (08:00 and 20:00)
 mitigates but doesn't eliminate this.
 
+### Daily summary email
+
+Set `DAILY_SUMMARY_EMAIL` in `.env` and every `garmin-mcp-sync` run ends by
+emailing a summary of the day from the local cache (sent through `mail`,
+like the alerts). It's plain text meant for a bot to parse but still
+readable: a `garmin_daily_summary v1` header, then `[section date=...]`
+blocks of `key=value` lines, units in the key names, missing values left
+out, and `status=no_data` for a section with no row. Activities are one
+`activity: key=value ...` line each, with spaces in names turned into `_`.
+
+Sleep, HRV, training readiness, training status and race predictions are
+for today (the night just ended). At 06:00 today's daily health is barely
+started, so it's marked `partial=true`, and yesterday's daily health and
+activities follow as the finished numbers. Body composition appears only on
+a day with a weigh-in.
+
+```bash
+garmin-mcp-daily-summary --print              # show today's summary
+garmin-mcp-daily-summary                      # email it now
+garmin-mcp-daily-summary --date 2026-11-05    # another day
+```
+
 ### macOS Documents-folder permission (if the project lives under `~/Documents`)
 
 If your project sits under `~/Documents` (or Desktop/Downloads), macOS's

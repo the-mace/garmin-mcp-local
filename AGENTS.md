@@ -18,7 +18,8 @@ schema, or rate limiter. Grok Build is the second opinion.
 - After a pull that touches `pyproject.toml`:
   `source .venv/bin/activate && pip install -e ".[dev]"`.
 - Tests: `pytest` (idempotency, rate limiter, monitoring, official API and FIT
-  laps). Setup, launchd jobs, and architecture are in `README.md`.
+  laps, daily summary). Setup, launchd jobs, and architecture are in
+  `README.md`.
 - Two Garmin clients: the official Personal API
   (`garmin_client/personal_api.py`) and unofficial `garminconnect`, bundled in
   `GarminClients` (`garmin_client/factory.py`). Category routing lives in

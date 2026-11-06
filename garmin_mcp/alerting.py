@@ -24,6 +24,12 @@ def send_alert_email(subject: str, body: str) -> bool:
     if not to_addr:
         print(f"ALERT_EMAIL_TO not configured, alert not sent:\n{subject}\n{body}", file=sys.stderr)
         return False
+    return send_email(to_addr, subject, body)
+
+
+def send_email(to_addr: str, subject: str, body: str) -> bool:
+    """Send via the local `mail` command. Never raises; returns whether
+    `mail` accepted the message."""
     try:
         subprocess.run(
             ["mail", "-s", subject, to_addr],
@@ -34,5 +40,5 @@ def send_alert_email(subject: str, body: str) -> bool:
         )
         return True
     except Exception as exc:  # noqa: BLE001 -- alerting must degrade to a log line, never propagate
-        print(f"Failed to send alert email ({exc}):\n{subject}\n{body}", file=sys.stderr)
+        print(f"Failed to send email to {to_addr} ({exc}):\n{subject}\n{body}", file=sys.stderr)
         return False

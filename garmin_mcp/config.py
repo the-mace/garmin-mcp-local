@@ -34,6 +34,7 @@ class Config:
     alert_email_to: str | None
     api_key: str | None
     api_key_expires: str | None
+    daily_summary_email: str | None
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -49,6 +50,7 @@ class Config:
             alert_email_to=os.environ.get("ALERT_EMAIL_TO") or None,
             api_key=os.environ.get("GARMIN_API_KEY") or None,
             api_key_expires=os.environ.get("GARMIN_API_KEY_EXPIRES") or None,
+            daily_summary_email=os.environ.get("DAILY_SUMMARY_EMAIL") or None,
         )
 
 

@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import sys
 import traceback
+from datetime import date
 
 from garmin_mcp.alerting import send_alert_email
 from garmin_mcp.config import get_config
+from garmin_mcp.daily_summary import send_daily_summary
 from garmin_mcp.db.connection import init_db
 from garmin_mcp.garmin_client.factory import build_clients
 from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimiterConfig
@@ -50,6 +52,9 @@ def _run() -> None:
 
     for category, result in results.items():
         print(f"[{category}] {result}")
+
+    if config.daily_summary_email:
+        send_daily_summary(conn, config.daily_summary_email, date.today())
 
     conn.close()
 
