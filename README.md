@@ -147,14 +147,14 @@ fetched vs. what's stale or failed.
 `sync` and `backfill` only run when invoked -- to run them automatically,
 three `launchd` LaunchAgents are provided under `launchd/`:
 
-- `local.garmin-mcp.sync` -- daily at 06:00, incremental catch-up.
-- `local.garmin-mcp.backfill` -- daily at 06:30 (staggered 30 min after
+- `local.garmin-mcp.sync` -- daily at 08:00, incremental catch-up.
+- `local.garmin-mcp.backfill` -- daily at 08:30 (staggered 30 min after
   sync so the two never write to the SQLite DB concurrently), 30-day
   batches, scoped to the 7 wellness/health categories (`activities` is
   excluded by default since a CSV-export seed already covers full activity
   history -- edit the plist's `--category` flags to include it if you
   didn't seed from a CSV export).
-- `local.garmin-mcp.watchdog` -- daily at 08:00 and 20:00, catches a
+- `local.garmin-mcp.watchdog` -- daily at 10:00 and 20:00, catches a
   scheduled run that failed silently (see "Failure alerting" below).
 
 `launchd` requires literal absolute paths (no `~` expansion, no env vars),
@@ -190,7 +190,7 @@ the change to take effect.
 ### Failure alerting
 
 A scheduled job can fail silently two different ways: it can crash (or
-never run at all -- disabled agent, sleeping laptop at 06:00), or it can
+never run at all -- disabled agent, sleeping laptop at 08:00), or it can
 exit 0 while a per-date fetch failed internally and got logged to
 `sync_log` as `status='partial'`/`'failed'`/`'rate_limited'` without
 raising (see `garmin_mcp/sync/engine.py` -- one bad date is swallowed
@@ -229,7 +229,7 @@ still visible in `logs/*.error.log` and `sync_log`, just not pushed to
 you). Note the watchdog job has the same "did launchd even run this"
 blind spot as the jobs it's watching -- there's no way to fully close that
 loop with a local-only design, which is the tradeoff for not running a
-regular external heartbeat. Scheduling it twice a day (08:00 and 20:00)
+regular external heartbeat. Scheduling it twice a day (10:00 and 20:00)
 mitigates but doesn't eliminate this.
 
 ### Daily summary email
@@ -243,7 +243,7 @@ out, and `status=no_data` for a section with no row. Activities are one
 `activity: key=value ...` line each, with spaces in names turned into `_`.
 
 Sleep, HRV, training readiness, training status and race predictions are
-for today (the night just ended). At 06:00 today's daily health is barely
+for today (the night just ended). At 08:00 today's daily health is barely
 started, so it's marked `partial=true`, and yesterday's daily health and
 activities follow as the finished numbers. Body composition appears only on
 a day with a weigh-in.

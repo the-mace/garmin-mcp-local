@@ -3,7 +3,7 @@
 Exists because a scheduled run can fail silently two different ways that a
 "catch the exception and email" wrapper alone won't see:
 
-- it never runs at all (launchd agent unloaded, laptop asleep at 06:00,
+- it never runs at all (launchd agent unloaded, laptop asleep at 08:00,
   etc.) -- there's no process to catch anything in;
 - it runs and exits 0, but a per-date fetch failed internally and was
   recorded as `status='partial'`/`'failed'`/`'rate_limited'` without

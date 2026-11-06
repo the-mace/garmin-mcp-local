@@ -19,7 +19,7 @@
          (see garmin_mcp/config.py), and setting one isn't needed now that
          nothing here goes through /bin/bash. -->
 
-    <!-- Twice daily, well after the 06:00/06:30 sync+backfill jobs should
+    <!-- Twice daily, well after the 08:00/08:30 sync+backfill jobs should
          have completed. Two firings (rather than one) give launchd two
          chances to catch a missed run if the Mac was asleep through one of
          them -- this job checks sync_log, it doesn't do any of the actual
@@ -28,7 +28,7 @@
     <array>
         <dict>
             <key>Hour</key>
-            <integer>8</integer>
+            <integer>10</integer>
             <key>Minute</key>
             <integer>0</integer>
         </dict>

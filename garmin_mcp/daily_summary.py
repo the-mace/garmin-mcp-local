@@ -5,7 +5,7 @@ Format (v1): a header line, then `[section key=value ...]` blocks of
 and a section with no row at all is a single `status=no_data` line. Every
 line splits on the first `=`, so a parser needs no knowledge of the fields.
 
-The scheduled sync runs at 06:00, when today's step/calorie totals have only
+The scheduled sync runs at 08:00, when today's step/calorie totals have only
 just started, so the summary also carries yesterday's daily health and
 activities as the finished numbers.
 """
