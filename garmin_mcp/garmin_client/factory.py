@@ -6,19 +6,46 @@ the first login, and build the official Personal API client when
 
 from __future__ import annotations
 
+import time
 from typing import Callable
 
-from garminconnect import Garmin
+from garminconnect import (
+    Garmin,
+    GarminConnectAuthenticationError,
+    GarminConnectTooManyRequestsError,
+)
 
 from garmin_mcp.config import Config
 from garmin_mcp.garmin_client.personal_api import PersonalApiClient
+from garmin_mcp.retry import is_transient, retry_call
+
+# Transient login failures (SSO 5xx, timeouts) get 30s, 60s, 120s waits.
+# Bad credentials, MFA and login rate limits are never retried: hammering
+# Garmin's SSO is how accounts get locked.
+LOGIN_RETRIES = 3
+LOGIN_BASE_DELAY_SECONDS = 30.0
+LOGIN_MAX_DELAY_SECONDS = 120.0
+
+
+def _login_is_retryable(exc: BaseException) -> bool:
+    if isinstance(exc, (GarminConnectAuthenticationError, GarminConnectTooManyRequestsError)):
+        return False
+    if "MFA" in str(exc):
+        return False
+    return is_transient(exc)
 
 
 def _prompt_mfa_code() -> str:
     return input("Enter the MFA code Garmin just sent you (email/SMS): ").strip()
 
 
-def build_client(config: Config, *, interactive: bool = False) -> Garmin:
+def build_client(
+    config: Config,
+    *,
+    interactive: bool = False,
+    sleep_fn: Callable[[float], None] = time.sleep,
+    garmin_cls: Callable[..., Garmin] = Garmin,
+) -> Garmin:
     """Log in and return an authenticated Garmin client.
 
     `interactive=True` (used by the CLI scripts, run from a real terminal)
@@ -27,15 +54,31 @@ def build_client(config: Config, *, interactive: bool = False) -> Garmin:
     future runs -- including the long-running MCP server, which passes
     `interactive=False` since it has no TTY to prompt on -- don't need to
     log in (or handle MFA) again until the token expires.
+
+    Transient failures are retried with a fresh client each time (see
+    LOGIN_RETRIES).
     """
-    client = Garmin(
-        config.garmin_email,
-        config.garmin_password,
-        prompt_mfa=_prompt_mfa_code if interactive else None,
-    )
     config.token_store.mkdir(parents=True, exist_ok=True)
-    try:
+
+    def attempt() -> Garmin:
+        client = garmin_cls(
+            config.garmin_email,
+            config.garmin_password,
+            prompt_mfa=_prompt_mfa_code if interactive else None,
+        )
         client.login(tokenstore=str(config.token_store))
+        return client
+
+    try:
+        return retry_call(
+            attempt,
+            label="garminconnect login",
+            retries=LOGIN_RETRIES,
+            base_delay=LOGIN_BASE_DELAY_SECONDS,
+            max_delay=LOGIN_MAX_DELAY_SECONDS,
+            is_retryable=_login_is_retryable,
+            sleep_fn=sleep_fn,
+        )
     except Exception as exc:
         if "MFA" in str(exc) and not interactive:
             raise RuntimeError(
@@ -45,7 +88,6 @@ def build_client(config: Config, *, interactive: bool = False) -> Garmin:
                 "afterward, so the MCP server won't need to prompt again."
             ) from exc
         raise
-    return client
 
 
 class GarminClients:

@@ -130,7 +130,24 @@ Every API call in this project goes through one rate-limited wrapper
 - persists the backoff/cooldown window to `sync_log`, so if a run gets
   rate-limited and dies, the *next* run (even a fresh process) sees the
   still-active cooldown and refuses to hammer the API again until it expires,
-- logs a clear failure (not a silent give-up) once retries are exhausted.
+- logs a clear failure (not a silent give-up) once retries are exhausted,
+- retries transient failures (5xx such as a 504 Gateway Timeout, timeouts,
+  connection errors) after 5, 10, 20 and 40s. These are not persisted as a
+  cooldown. After two calls in a row exhaust those retries, Garmin is
+  treated as down and later calls fail fast until one succeeds.
+
+Retries also cover the other external actions (`garmin_mcp/retry.py`):
+- the `garminconnect` login retries transient failures after 30, 60 and
+  120s. Bad credentials, MFA and login rate limits are never retried,
+  since hammering Garmin's SSO risks an account lockout;
+- the scheduled `garmin-mcp-sync` and `garmin-mcp-activities-sync` re-run
+  the whole (idempotent) sync when a run crashed on, or ended with,
+  transient failures: up to `GARMIN_RUN_RETRIES` (default 2) more times,
+  waiting `GARMIN_RUN_RETRY_DELAY_SECONDS` (default 300, doubling each
+  time). The summary email and any failure alert go out once, after the
+  final attempt. Persistent failures (a date that always 404s, an active
+  rate-limit cooldown) do not trigger a re-run;
+- sending mail retries a failed hand-off to `mail` twice (after 15s, 30s).
 
 Truncation is never silent: every batch fetch records `records_expected`
 vs. `records_fetched` in `sync_log`, and anything short of a full,
@@ -473,3 +490,6 @@ Focused specifically on the two failure modes this project exists to avoid:
   cooldown blocking a fresh process from hammering the API again, and
   that retries are capped with a clear logged failure rather than an
   infinite loop or a silent give-up.
+- `tests/test_retry.py`: transient-error retries (including the
+  2026-11-09 504 from the token endpoint), the outage breaker, login
+  retries that never retry bad credentials, whole-run retries, and mail.

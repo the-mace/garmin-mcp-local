@@ -47,6 +47,7 @@ from garmin_mcp.garmin_client.rate_limiter import (
     RateLimitExceeded,
     StillCoolingDown,
 )
+from garmin_mcp.retry import is_transient
 from garmin_mcp.sync.cursor import get_cursor, set_cursor
 from garmin_mcp.sync.fit_laps import parse_fit_laps
 
@@ -139,6 +140,10 @@ class ActivitiesSyncResult:
     reached_before_day: bool = False
     reached_end_of_history: bool = False
     stopped_early: bool = False
+    # A page fetch failed even after the rate limiter's retries (e.g. a
+    # Garmin outage). The run is partial and a scheduled run retries it.
+    fetch_failed: bool = False
+    transient_failures: int = 0
     warnings: list[str] = None
 
     def __post_init__(self):
@@ -150,6 +155,23 @@ class ActivitiesSyncResult:
 
 def _activity_list_client(clients: GarminClients):
     return clients.personal or clients.garmin
+
+
+def _fetch_page(rate_limited_client, clients, start: int, page_size: int, result: "ActivitiesSyncResult"):
+    """One activity-list page, or None when the walk must stop: an active
+    cooldown / exhausted rate-limit retries (`stopped_early`) or any other
+    failure (`fetch_failed`, with a warning). Never raises, so one bad page
+    doesn't abort the rest of the sync run."""
+    try:
+        return rate_limited_client.call(CATEGORY, _activity_list_client(clients).get_activities, start, page_size)
+    except (StillCoolingDown, RateLimitExceeded):
+        result.stopped_early = True
+    except Exception as exc:  # noqa: BLE001 -- recorded as partial; retried by the next attempt/run
+        result.fetch_failed = True
+        if is_transient(exc):
+            result.transient_failures += 1
+        result.warnings.append(f"activity list page at offset {start} failed: {exc!r}")
+    return None
 
 
 def _fetch_laps(clients: GarminClients, activity_id: int) -> list[dict]:
@@ -260,10 +282,8 @@ def incremental_sync_activities(
     oldest_seen_ms: int | None = None
 
     for _ in range(max_pages):
-        try:
-            page = rate_limited_client.call(CATEGORY, _activity_list_client(clients).get_activities, start, page_size)
-        except StillCoolingDown:
-            result.stopped_early = True
+        page = _fetch_page(rate_limited_client, clients, start, page_size, result)
+        if page is None:
             break
 
         result.pages_fetched += 1
@@ -299,7 +319,7 @@ def incremental_sync_activities(
             break
         start += page_size
 
-    if not result.stopped_early:
+    if not (result.stopped_early or result.fetch_failed):
         if oldest_seen_ms is not None:
             remove_deleted_activities(conn, seen_ids, oldest_seen_ms, result)
         fill_missing_laps(rate_limited_client, clients, conn, result)
@@ -342,10 +362,8 @@ def backfill_activities(
     start = int(cursor) if cursor else 0
 
     for _ in range(max_pages):
-        try:
-            page = rate_limited_client.call(CATEGORY, _activity_list_client(clients).get_activities, start, page_size)
-        except StillCoolingDown:
-            result.stopped_early = True
+        page = _fetch_page(rate_limited_client, clients, start, page_size, result)
+        if page is None:
             break
 
         result.pages_fetched += 1
@@ -449,10 +467,8 @@ def sync_todays_activities(
     seen_ids: set[int] = set()
 
     for _ in range(max_pages):
-        try:
-            page = rate_limited_client.call(CATEGORY, _activity_list_client(clients).get_activities, start, page_size)
-        except StillCoolingDown:
-            result.stopped_early = True
+        page = _fetch_page(rate_limited_client, clients, start, page_size, result)
+        if page is None:
             break
 
         result.pages_fetched += 1
@@ -495,7 +511,7 @@ def sync_todays_activities(
             break
         start += page_size
 
-    if not result.stopped_early:
+    if not (result.stopped_early or result.fetch_failed):
         if result.reached_before_day:
             remove_deleted_day_activities(conn, seen_ids, day_start_ms, day_end_ms, result)
         fill_missing_laps(

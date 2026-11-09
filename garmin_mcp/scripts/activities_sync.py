@@ -20,7 +20,8 @@ from garmin_mcp.daily_summary import render_activities_summary, send_activities_
 from garmin_mcp.db.connection import init_db
 from garmin_mcp.garmin_client.factory import build_clients
 from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimiterConfig
-from garmin_mcp.sync.runner import run_todays_activities_sync
+from garmin_mcp.retry import run_with_retries
+from garmin_mcp.sync.runner import run_todays_activities_sync, sync_needs_retry
 
 
 def main() -> None:
@@ -52,16 +53,25 @@ def _run(*, day: date | None, print_only: bool) -> None:
     config = get_config()
     day = day or date.today()
     conn = init_db(config.db_path)
-    clients = build_clients(config, interactive=sys.stdin.isatty())
-    rate_limited_client = RateLimitedClient(
-        conn,
-        RateLimiterConfig(
-            min_request_interval_seconds=config.min_request_interval_seconds,
-            max_retries=config.max_retries,
-        ),
-    )
 
-    results = run_todays_activities_sync(conn, clients, rate_limited_client, today=day)
+    def attempt():
+        clients = build_clients(config, interactive=sys.stdin.isatty())
+        rate_limited_client = RateLimitedClient(
+            conn,
+            RateLimiterConfig(
+                min_request_interval_seconds=config.min_request_interval_seconds,
+                max_retries=config.max_retries,
+            ),
+        )
+        return run_todays_activities_sync(conn, clients, rate_limited_client, today=day), clients
+
+    results, clients = run_with_retries(
+        attempt,
+        label="garmin-mcp-activities-sync",
+        retries=config.run_retries,
+        delay_seconds=config.run_retry_delay_seconds,
+        needs_retry=lambda outcome: sync_needs_retry(*outcome),
+    )
     for category, result in results.items():
         print(f"[{category}] {result}")
 

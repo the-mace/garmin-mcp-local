@@ -9,7 +9,12 @@ so there is exactly one place that:
     exhausted,
   * persists the current backoff/cooldown window to `sync_log` so a
     rate-limited run doesn't immediately hammer the API again the next
-    time this process (or a fresh one) starts up.
+    time this process (or a fresh one) starts up,
+  * retries transient failures (5xx such as a 504 Gateway Timeout,
+    timeouts, connection errors) with a shorter in-process backoff, capped
+    at `transient_max_retries`. These are not persisted as a cooldown: an
+    outage is not a reason to skip the next run. Once exhausted the
+    original exception propagates, so callers record it per date/page.
 
 `time_fn` / `sleep_fn` are injectable so tests can exercise the backoff
 math without actually sleeping for minutes.
@@ -18,13 +23,14 @@ math without actually sleeping for minutes.
 from __future__ import annotations
 
 import logging
-import random
 import sqlite3
 import time
 from dataclasses import dataclass
 from typing import Callable
 
 from garminconnect import GarminConnectTooManyRequestsError
+
+from garmin_mcp.retry import backoff_seconds, is_transient, status_code_of
 
 _LOGGER = logging.getLogger("garmin_mcp.rate_limiter")
 
@@ -48,21 +54,10 @@ class StillCoolingDown(Exception):
         )
 
 
-def _status_code_of(exc: BaseException) -> int | None:
-    status = getattr(exc, "status_code", None)
-    if isinstance(status, int):
-        return status
-    response = getattr(exc, "response", None)
-    status = getattr(response, "status_code", None)
-    if isinstance(status, int):
-        return status
-    return None
-
-
 def _is_rate_limited_or_forbidden(exc: BaseException) -> bool:
     if isinstance(exc, GarminConnectTooManyRequestsError):
         return True
-    return _status_code_of(exc) in _RATE_LIMIT_STATUS_CODES
+    return status_code_of(exc) in _RATE_LIMIT_STATUS_CODES
 
 
 @dataclass
@@ -72,6 +67,16 @@ class RateLimiterConfig:
     base_backoff_seconds: float = 2.0
     max_backoff_seconds: float = 300.0
     jitter_fraction: float = 0.25
+    # 5xx / timeouts / connection errors: 5, 10, 20, 40s (+/- jitter), so a
+    # brief Garmin outage costs about a minute and a half per call at most.
+    transient_max_retries: int = 4
+    transient_base_backoff_seconds: float = 5.0
+    transient_max_backoff_seconds: float = 60.0
+    # After this many calls in a row exhaust their transient retries, Garmin
+    # is treated as down: later calls get one attempt each until one
+    # succeeds, so an outage ends the run quickly and the scheduled script's
+    # whole-run retry (minutes later) takes over.
+    outage_after_exhausted_calls: int = 2
 
 
 class RateLimitedClient:
@@ -88,13 +93,24 @@ class RateLimitedClient:
         self._time_fn = time_fn
         self._sleep_fn = sleep_fn
         self._last_call_monotonic: float | None = None
+        self._consecutive_exhausted = 0
 
     def compute_backoff_seconds(self, attempt: int) -> float:
         """attempt is 1-indexed (first retry = 1)."""
-        raw = self.config.base_backoff_seconds * (2 ** (attempt - 1))
-        capped = min(raw, self.config.max_backoff_seconds)
-        jitter = capped * self.config.jitter_fraction
-        return max(0.0, capped + random.uniform(-jitter, jitter))
+        return backoff_seconds(
+            attempt,
+            self.config.base_backoff_seconds,
+            self.config.max_backoff_seconds,
+            self.config.jitter_fraction,
+        )
+
+    def compute_transient_backoff_seconds(self, attempt: int) -> float:
+        return backoff_seconds(
+            attempt,
+            self.config.transient_base_backoff_seconds,
+            self.config.transient_max_backoff_seconds,
+            self.config.jitter_fraction,
+        )
 
     def _active_backoff_until(self, category: str) -> float | None:
         row = self.conn.execute(
@@ -144,7 +160,8 @@ class RateLimitedClient:
 
         Raises StillCoolingDown without attempting the call at all if a
         prior run left an unexpired backoff window for this category.
-        Raises RateLimitExceeded if retries are exhausted.
+        Raises RateLimitExceeded if rate-limit retries are exhausted, and the
+        original exception once transient-error retries are exhausted.
         """
         backoff_until = self._active_backoff_until(category)
         now = self._time_fn()
@@ -152,16 +169,35 @@ class RateLimitedClient:
             raise StillCoolingDown(category, backoff_until - now)
 
         attempt = 0
+        transient_attempt = 0
         while True:
             self._respect_min_interval()
             try:
                 result = func(*args, **kwargs)
                 self._last_call_monotonic = self._time_fn()
+                self._consecutive_exhausted = 0
                 return result
             except Exception as exc:  # noqa: BLE001 -- must inspect any client exception for 429/403
                 self._last_call_monotonic = self._time_fn()
                 if not _is_rate_limited_or_forbidden(exc):
-                    raise
+                    if not is_transient(exc):
+                        raise
+                    transient_attempt += 1
+                    outage = self._consecutive_exhausted >= self.config.outage_after_exhausted_calls
+                    if outage or transient_attempt > self.config.transient_max_retries:
+                        self._consecutive_exhausted += 1
+                        _LOGGER.error(
+                            "%s: giving up after %d transient failures (%r)",
+                            category, transient_attempt, exc,
+                        )
+                        raise
+                    backoff = self.compute_transient_backoff_seconds(transient_attempt)
+                    _LOGGER.warning(
+                        "%s: transient error on attempt %d/%d, retrying in %.1fs (%r)",
+                        category, transient_attempt, self.config.transient_max_retries, backoff, exc,
+                    )
+                    self._sleep_fn(backoff)
+                    continue
                 attempt += 1
                 if attempt > self.config.max_retries:
                     warning = (

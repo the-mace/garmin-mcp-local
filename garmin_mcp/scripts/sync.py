@@ -17,7 +17,8 @@ from garmin_mcp.daily_summary import send_daily_summary
 from garmin_mcp.db.connection import init_db
 from garmin_mcp.garmin_client.factory import build_clients
 from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, RateLimiterConfig
-from garmin_mcp.sync.runner import run_sync
+from garmin_mcp.retry import run_with_retries
+from garmin_mcp.sync.runner import run_sync, sync_needs_retry
 
 
 def main() -> None:
@@ -39,16 +40,27 @@ def _run() -> None:
     # hang or raise an unhelpful EOFError instead of the clear "run this
     # interactively once" error build_client already raises (now on first use
     # of the unofficial client, not at startup).
-    clients = build_clients(config, interactive=sys.stdin.isatty())
-    rate_limited_client = RateLimitedClient(
-        conn,
-        RateLimiterConfig(
-            min_request_interval_seconds=config.min_request_interval_seconds,
-            max_retries=config.max_retries,
-        ),
-    )
+    def attempt():
+        # Fresh clients per attempt: a failed login is memoized per bundle.
+        clients = build_clients(config, interactive=sys.stdin.isatty())
+        rate_limited_client = RateLimitedClient(
+            conn,
+            RateLimiterConfig(
+                min_request_interval_seconds=config.min_request_interval_seconds,
+                max_retries=config.max_retries,
+            ),
+        )
+        return run_sync(conn, clients, rate_limited_client), clients
 
-    results = run_sync(conn, clients, rate_limited_client)
+    # Each call is already retried; this re-runs the whole (idempotent) sync
+    # a few minutes later when a Garmin outage outlasted those retries.
+    results, clients = run_with_retries(
+        attempt,
+        label="garmin-mcp-sync",
+        retries=config.run_retries,
+        delay_seconds=config.run_retry_delay_seconds,
+        needs_retry=lambda outcome: sync_needs_retry(*outcome),
+    )
 
     for category, result in results.items():
         print(f"[{category}] {result}")

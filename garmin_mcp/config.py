@@ -35,6 +35,11 @@ class Config:
     api_key: str | None
     api_key_expires: str | None
     daily_summary_email: str | None
+    # Scheduled syncs re-run the whole sync this many extra times when a run
+    # crashes or ends with transient failures, waiting the delay (doubling
+    # each time: 5 then 10 minutes by default) for an outage to clear.
+    run_retries: int = 2
+    run_retry_delay_seconds: float = 300.0
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -51,6 +56,8 @@ class Config:
             api_key=os.environ.get("GARMIN_API_KEY") or None,
             api_key_expires=os.environ.get("GARMIN_API_KEY_EXPIRES") or None,
             daily_summary_email=os.environ.get("DAILY_SUMMARY_EMAIL") or None,
+            run_retries=int(os.environ.get("GARMIN_RUN_RETRIES", "2")),
+            run_retry_delay_seconds=float(os.environ.get("GARMIN_RUN_RETRY_DELAY_SECONDS", "300")),
         )
 
 
