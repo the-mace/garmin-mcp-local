@@ -16,6 +16,7 @@ from garmin_mcp.sync.activities_sync import (
 )
 from garmin_mcp.sync.daily_categories import build_specs
 from garmin_mcp.sync.engine import backfill_batch, incremental_sync
+from garmin_mcp.retry import is_transient
 
 
 def run_sync(
@@ -80,3 +81,20 @@ def run_todays_activities_sync(
     wellness categories."""
     today = today or date.today()
     return {"activities": sync_todays_activities(rate_limited_client, clients, conn, day=today)}
+
+
+def sync_needs_retry(results: dict, clients: GarminClients) -> str | None:
+    """Why a finished sync run should be attempted again, or None.
+
+    Only transient trouble counts (Garmin 5xx, timeouts, connection
+    errors): a date that fails the same way every time, or an active
+    rate-limit cooldown, would not be fixed by re-running minutes later.
+    """
+    reasons = []
+    if clients.login_error is not None and is_transient(clients.login_error):
+        reasons.append(f"garminconnect login failed ({clients.login_error!r})")
+    for category, result in results.items():
+        count = getattr(result, "transient_failures", 0)
+        if count:
+            reasons.append(f"{category}: {count} transient failure(s)")
+    return "; ".join(reasons) or None

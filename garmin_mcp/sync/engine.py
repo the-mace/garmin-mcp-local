@@ -37,6 +37,7 @@ from garmin_mcp.db.connection import upsert
 from garmin_mcp.db.sync_log import log_sync_run
 from garmin_mcp.garmin_client.factory import GarminClients
 from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient, StillCoolingDown
+from garmin_mcp.retry import is_transient
 from garmin_mcp.sync.cursor import set_cursor
 from garmin_mcp.sync.daily_categories import DailyCategorySpec
 
@@ -157,6 +158,9 @@ class SyncResult:
     failed: list[tuple[str, str]] = field(default_factory=list)
     succeeded: list[str] = field(default_factory=list)
     stopped_early: bool = False  # hit a persisted cooldown mid-batch
+    # Failures a later attempt can plausibly fix (5xx, timeouts); drives the
+    # scheduled run's whole-run retry (garmin_mcp.retry.run_with_retries).
+    transient_failures: int = 0
 
     @property
     def expected(self) -> int:
@@ -223,6 +227,8 @@ def sync_daily_category(
         for cdate, raw, error in _fetch_days(spec, rate_limited_client, clients, dates):
             if error is not None:
                 result.failed.append((cdate, repr(error)))
+                if is_transient(error):
+                    result.transient_failures += 1
                 continue
             result.fetched += 1
             result.succeeded.append(cdate)
