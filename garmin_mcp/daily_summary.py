@@ -198,7 +198,7 @@ def _day_section(conn: sqlite3.Connection, name: str, table: str, fields: list[F
     return [header, *(f"{k}={_clean(v)}" for k, v in pairs)]
 
 
-def _activities_section(conn: sqlite3.Connection, day: date) -> list[str]:
+def _activities_section(conn: sqlite3.Connection, day: date, *, empty_status: str | None = None) -> list[str]:
     start = datetime.combine(day, time()).astimezone()
     end = start + timedelta(days=1)
     rows = conn.execute(
@@ -207,6 +207,9 @@ def _activities_section(conn: sqlite3.Connection, day: date) -> list[str]:
         (int(start.timestamp() * 1000), int(end.timestamp() * 1000)),
     ).fetchall()
     lines = [f"[activities date={day.isoformat()} count={len(rows)}]"]
+    if not rows and empty_status:
+        lines.append(f"status={empty_status}")
+        return lines
     for row in rows:
         lines.append("activity: " + " ".join(f"{k}={_clean(v).replace(' ', '_')}" for k, v in _pairs(row, ACTIVITY)))
     return lines
@@ -253,3 +256,33 @@ def send_daily_summary(conn: sqlite3.Connection, to_addr: str, day: date) -> boo
         print(f"Daily summary for {day} not rendered: {exc!r}", file=sys.stderr)
         return False
     return send_email(to_addr, summary_subject(day), body)
+
+
+def activities_summary_subject(day: date) -> str:
+    return f"garmin activities {day.isoformat()}"
+
+
+def render_activities_summary(conn: sqlite3.Connection, day: date, *, now: datetime | None = None) -> str:
+    """Today's workouts only — no sleep, health, body composition, or prior days."""
+    conn.row_factory = sqlite3.Row
+    now = (now or datetime.now()).astimezone()
+    generated = now.isoformat(timespec="seconds")
+    header = [
+        f"garmin_activities_summary v{FORMAT_VERSION}",
+        f"date={day.isoformat()}",
+        f"generated={generated}",
+    ]
+    sections = [header, _activities_section(conn, day, empty_status="no_workouts")]
+    return "\n\n".join("\n".join(s) for s in sections) + "\n"
+
+
+def send_activities_summary(conn: sqlite3.Connection, to_addr: str, day: date) -> bool:
+    """Email today's activities-only summary. Never raises."""
+    from garmin_mcp.alerting import send_email
+
+    try:
+        body = render_activities_summary(conn, day)
+    except Exception as exc:  # noqa: BLE001
+        print(f"Activities summary for {day} not rendered: {exc!r}", file=sys.stderr)
+        return False
+    return send_email(to_addr, activities_summary_subject(day), body)

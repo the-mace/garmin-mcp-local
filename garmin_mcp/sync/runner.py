@@ -12,6 +12,7 @@ from garmin_mcp.garmin_client.rate_limiter import RateLimitedClient
 from garmin_mcp.sync.activities_sync import (
     backfill_activities,
     incremental_sync_activities,
+    sync_todays_activities,
 )
 from garmin_mcp.sync.daily_categories import build_specs
 from garmin_mcp.sync.engine import backfill_batch, incremental_sync
@@ -66,3 +67,16 @@ def run_backfill(
         )
 
     return results
+
+
+def run_todays_activities_sync(
+    conn: sqlite3.Connection,
+    clients: GarminClients,
+    rate_limited_client: RateLimitedClient,
+    today: date | None = None,
+) -> dict:
+    """Evening activities-only sync: fetch and persist workouts that began
+    on the local calendar day. Does not touch sleep, health, or other
+    wellness categories."""
+    today = today or date.today()
+    return {"activities": sync_todays_activities(rate_limited_client, clients, conn, day=today)}

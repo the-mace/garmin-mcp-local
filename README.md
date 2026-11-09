@@ -145,7 +145,7 @@ fetched vs. what's stale or failed.
 ## Scheduling (launchd)
 
 `sync` and `backfill` only run when invoked -- to run them automatically,
-three `launchd` LaunchAgents are provided under `launchd/`:
+four `launchd` LaunchAgents are provided under `launchd/`:
 
 - `local.garmin-mcp.sync` -- daily at 08:00, incremental catch-up.
 - `local.garmin-mcp.backfill` -- daily at 08:30 (staggered 30 min after
@@ -154,6 +154,12 @@ three `launchd` LaunchAgents are provided under `launchd/`:
   excluded by default since a CSV-export seed already covers full activity
   history -- edit the plist's `--category` flags to include it if you
   didn't seed from a CSV export).
+- `local.garmin-mcp.activities-sync` -- daily at 19:00, activities only
+  for the current local calendar day (today's workouts). Emails a separate
+  summary under subject `garmin activities YYYY-MM-DD` when
+  `DAILY_SUMMARY_EMAIL` is set, so the day's workouts are available for
+  planning tomorrow. Does not fetch sleep, health, body composition, or
+  older activities.
 - `local.garmin-mcp.watchdog` -- daily at 10:00 and 20:00, catches a
   scheduled run that failed silently (see "Failure alerting" below).
 
@@ -165,18 +171,20 @@ the template in place:
 
 ```bash
 REPO_ROOT="$(pwd)"
-for job in sync backfill watchdog; do
+for job in sync backfill activities-sync watchdog; do
     sed "s|__REPO_ROOT__|$REPO_ROOT|g" \
         "launchd/local.garmin-mcp.$job.plist" \
         > ~/Library/LaunchAgents/"local.garmin-mcp.$job.plist"
 done
 launchctl load ~/Library/LaunchAgents/local.garmin-mcp.sync.plist
 launchctl load ~/Library/LaunchAgents/local.garmin-mcp.backfill.plist
+launchctl load ~/Library/LaunchAgents/local.garmin-mcp.activities-sync.plist
 launchctl load ~/Library/LaunchAgents/local.garmin-mcp.watchdog.plist
 ```
 
-Logs land in `logs/sync.log` / `logs/sync.error.log` (and the `backfill`
-and `watchdog` equivalents). Trigger a run immediately (e.g. to test) with:
+Logs land in `logs/sync.log` / `logs/sync.error.log` (and the `backfill`,
+`activities-sync`, and `watchdog` equivalents). Trigger a run immediately
+(e.g. to test) with:
 
 ```bash
 launchctl start local.garmin-mcp.sync
@@ -206,10 +214,10 @@ a normal successful day, so there's no regular outbound signal revealing
 when this machine is online. The only network traffic this ever generates
 is the alert itself, sent only when there's actually something to report.
 
-- `garmin-mcp-sync` / `garmin-mcp-backfill` email immediately on any
-  unhandled exception (login failure, DB error, etc.), then re-raise --
-  the real exit code and traceback still land in `logs/*.error.log`
-  exactly as before, alerting never masks it.
+- `garmin-mcp-sync` / `garmin-mcp-backfill` / `garmin-mcp-activities-sync`
+  email immediately on any unhandled exception (login failure, DB error,
+  etc.), then re-raise -- the real exit code and traceback still land in
+  `logs/*.error.log` exactly as before, alerting never masks it.
 - `garmin-mcp-watchdog` (the third launchd job above) is what catches the
   other two failure modes -- a job that never ran, or one that ran but
   logged `partial`/`failed`/`rate_limited`. It reads `sync_log` for the
@@ -248,10 +256,17 @@ started, so it's marked `partial=true`, and yesterday's daily health and
 activities follow as the finished numbers. Body composition appears only on
 a day with a weigh-in.
 
+The 19:00 `garmin-mcp-activities-sync` job uses the same
+`DAILY_SUMMARY_EMAIL` recipient but sends a separate message: subject
+`garmin activities YYYY-MM-DD`, body `garmin_activities_summary v1` with
+only that day's workout lines (or `status=no_workouts` when there were
+none). No sleep, health, or prior-day sections.
+
 ```bash
 garmin-mcp-daily-summary --print              # show today's summary
 garmin-mcp-daily-summary                      # email it now
 garmin-mcp-daily-summary --date 2026-11-05    # another day
+garmin-mcp-activities-sync --print            # sync today + print activities email body
 ```
 
 ### macOS Documents-folder permission (if the project lives under `~/Documents`)

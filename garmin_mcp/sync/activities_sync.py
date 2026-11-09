@@ -37,7 +37,7 @@ from __future__ import annotations
 import json
 import sqlite3
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 
 from garmin_mcp.db.connection import upsert
 from garmin_mcp.db.sync_log import log_sync_run
@@ -136,6 +136,7 @@ class ActivitiesSyncResult:
     laps_written: int = 0
     deleted_activity_ids: list[int] = None
     reached_known_activity: bool = False
+    reached_before_day: bool = False
     reached_end_of_history: bool = False
     stopped_early: bool = False
     warnings: list[str] = None
@@ -167,18 +168,33 @@ def fill_missing_laps(
     conn: sqlite3.Connection,
     result: ActivitiesSyncResult,
     max_activities: int = 40,
+    min_begin_ms: int | None = None,
 ) -> None:
     """Fetch laps for API-sourced activities that have never had them
-    fetched (lap_count IS NULL), newest first, up to `max_activities`."""
-    pending = conn.execute(
-        """
-        SELECT activity_id FROM activities
-        WHERE source = 'api' AND lap_count IS NULL
-        ORDER BY begin_timestamp_utc_ms DESC
-        LIMIT ?
-        """,
-        (max_activities,),
-    ).fetchall()
+    fetched (lap_count IS NULL), newest first, up to `max_activities`.
+    When `min_begin_ms` is set, only activities that started at/after that
+    instant are considered (used by the evening today-only sync)."""
+    if min_begin_ms is None:
+        pending = conn.execute(
+            """
+            SELECT activity_id FROM activities
+            WHERE source = 'api' AND lap_count IS NULL
+            ORDER BY begin_timestamp_utc_ms DESC
+            LIMIT ?
+            """,
+            (max_activities,),
+        ).fetchall()
+    else:
+        pending = conn.execute(
+            """
+            SELECT activity_id FROM activities
+            WHERE source = 'api' AND lap_count IS NULL
+              AND begin_timestamp_utc_ms >= ?
+            ORDER BY begin_timestamp_utc_ms DESC
+            LIMIT ?
+            """,
+            (min_begin_ms, max_activities),
+        ).fetchall()
 
     for (activity_id,) in pending:
         try:
@@ -375,5 +391,146 @@ def backfill_activities(
         records_fetched=result.activities_written,
         warning=warning,
         cursor_type="offset",
+    )
+    return result
+
+
+def remove_deleted_day_activities(
+    conn: sqlite3.Connection,
+    seen_ids: set[int],
+    day_start_ms: int,
+    day_end_ms: int,
+    result: ActivitiesSyncResult,
+) -> None:
+    """Delete local API-sourced activities that began on the local day but
+    were absent from the freshly fetched list for that day. Only safe once
+    the walk has reached an activity from before the day."""
+    missing = conn.execute(
+        """
+        SELECT activity_id, name FROM activities
+        WHERE source = 'api'
+          AND begin_timestamp_utc_ms >= ?
+          AND begin_timestamp_utc_ms < ?
+        """,
+        (day_start_ms, day_end_ms),
+    ).fetchall()
+    missing = [(aid, name) for aid, name in missing if aid not in seen_ids]
+    if not missing:
+        return
+    if len(missing) > MAX_DELETIONS_PER_RUN:
+        result.warnings.append(
+            f"{len(missing)} activities missing from Garmin's list for the day; over the "
+            f"limit of {MAX_DELETIONS_PER_RUN}, so none were deleted locally"
+        )
+        return
+    conn.executemany("DELETE FROM activities WHERE activity_id = ?", [(aid,) for aid, _ in missing])
+    conn.commit()
+    result.deleted_activity_ids.extend(aid for aid, _ in missing)
+
+
+def sync_todays_activities(
+    rate_limited_client: RateLimitedClient,
+    clients: GarminClients,
+    conn: sqlite3.Connection,
+    day: date | None = None,
+    page_size: int = 50,
+    max_pages: int = 5,
+) -> ActivitiesSyncResult:
+    """Fetch and persist activities that began on the local calendar `day`
+    (default: today). Newest-first walk; stops once a page reaches an
+    activity from before that day. Does not touch wellness categories."""
+    day = day or date.today()
+    day_start = datetime.combine(day, time.min).astimezone()
+    day_start_ms = int(day_start.timestamp() * 1000)
+    day_end_ms = int((day_start + timedelta(days=1)).timestamp() * 1000)
+
+    result = ActivitiesSyncResult()
+    start = 0
+    seen_ids: set[int] = set()
+
+    for _ in range(max_pages):
+        try:
+            page = rate_limited_client.call(CATEGORY, _activity_list_client(clients).get_activities, start, page_size)
+        except StillCoolingDown:
+            result.stopped_early = True
+            break
+
+        result.pages_fetched += 1
+        if not page:
+            result.reached_end_of_history = True
+            result.reached_before_day = True
+            break
+
+        if 0 < len(page) < page_size:
+            result.warnings.append(
+                f"page at offset {start} returned {len(page)}/{page_size} activities "
+                "without an explicit end-of-history signal"
+            )
+
+        hit_before_day = False
+        for act in page:
+            row = _map_live_activity(act)
+            if not row:
+                continue
+            begin = row["begin_timestamp_utc_ms"]
+            if begin is None:
+                continue
+            if begin < day_start_ms:
+                hit_before_day = True
+                break
+            if begin >= day_end_ms:
+                continue
+            seen_ids.add(row["activity_id"])
+            upsert(conn, "activities", row, ["activity_id"])
+            result.activities_written += 1
+
+        conn.commit()
+
+        if hit_before_day:
+            result.reached_before_day = True
+            break
+        if len(page) < page_size:
+            result.reached_end_of_history = True
+            result.reached_before_day = True
+            break
+        start += page_size
+
+    if not result.stopped_early:
+        if result.reached_before_day:
+            remove_deleted_day_activities(conn, seen_ids, day_start_ms, day_end_ms, result)
+        fill_missing_laps(
+            rate_limited_client,
+            clients,
+            conn,
+            result,
+            max_activities=20,
+            min_begin_ms=day_start_ms,
+        )
+
+    status = "success"
+    warning = "; ".join(result.warnings) or None
+    if result.stopped_early:
+        status = "partial"
+        warning = (warning + "; " if warning else "") + "stopped early: active rate-limit cooldown"
+    elif result.warnings:
+        status = "partial"
+    if result.deleted_activity_ids:
+        note = (
+            f"removed {len(result.deleted_activity_ids)} activity(ies) deleted in Garmin Connect: "
+            f"{result.deleted_activity_ids}"
+        )
+        warning = (warning + "; " if warning else "") + note
+
+    log_sync_run(
+        conn,
+        category=CATEGORY,
+        run_type="evening_activities",
+        status=status,
+        records_expected=result.pages_fetched * page_size,
+        records_fetched=result.activities_written,
+        warning=warning,
+        cursor_type="offset",
+        range_start=day.isoformat(),
+        range_end=day.isoformat(),
     )
     return result
