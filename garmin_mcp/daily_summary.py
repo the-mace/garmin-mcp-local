@@ -152,6 +152,14 @@ DAILY_HEALTH: list[Field] = [
     ("highest_respiration", "respiration_high_brpm", _r1),
 ]
 
+BODY_BATTERY: list[Field] = [
+    ("body_battery_most_recent", "latest", None),
+    ("body_battery_highest", "high", None),
+    ("body_battery_lowest", "low", None),
+    ("body_battery_charged", "charged", None),
+    ("body_battery_drained", "drained", None),
+]
+
 ACTIVITY: list[Field] = [
     ("activity_id", "id", None),
     ("activity_type", "type", None),
@@ -263,7 +271,8 @@ def activities_summary_subject(day: date) -> str:
 
 
 def render_activities_summary(conn: sqlite3.Connection, day: date, *, now: datetime | None = None) -> str:
-    """Today's workouts only — no sleep, health, body composition, or prior days."""
+    """That day's workouts and body battery; no sleep, other health metrics,
+    body composition, or prior days."""
     conn.row_factory = sqlite3.Row
     now = (now or datetime.now()).astimezone()
     generated = now.isoformat(timespec="seconds")
@@ -272,12 +281,17 @@ def render_activities_summary(conn: sqlite3.Connection, day: date, *, now: datet
         f"date={day.isoformat()}",
         f"generated={generated}",
     ]
-    sections = [header, _activities_section(conn, day, empty_status="no_workouts")]
+    today_note = " partial=true" if day >= now.date() else ""
+    sections = [
+        header,
+        _activities_section(conn, day, empty_status="no_workouts"),
+        _day_section(conn, "body_battery", "daily_health_metrics", BODY_BATTERY, day, today_note),
+    ]
     return "\n\n".join("\n".join(s) for s in sections) + "\n"
 
 
 def send_activities_summary(conn: sqlite3.Connection, to_addr: str, day: date) -> bool:
-    """Email today's activities-only summary. Never raises."""
+    """Email the evening activities + body battery summary. Never raises."""
     from garmin_mcp.alerting import send_email
 
     try:

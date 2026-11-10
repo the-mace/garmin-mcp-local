@@ -111,8 +111,35 @@ def test_render_activities_summary_only_todays_workouts(conn):
     assert "Yesterday" not in text and "Tomorrow" not in text
     assert "sleep" not in text
     assert "daily_health" not in text
+    assert "steps=" not in text
     assert "body_composition" not in text
     assert "hrv" not in text
+
+
+def test_render_activities_summary_includes_body_battery(conn):
+    upsert(
+        conn,
+        "daily_health_metrics",
+        {
+            "calendar_date": DAY.isoformat(),
+            "total_steps": 5000,
+            "body_battery_most_recent": 34,
+            "body_battery_highest": 88,
+            "body_battery_lowest": 30,
+            "body_battery_charged": 55,
+            "body_battery_drained": 60,
+        },
+        ["calendar_date"],
+    )
+    conn.commit()
+    text = render_activities_summary(conn, DAY, now=NOW)
+    section = text.split("[body_battery date=2026-11-08 partial=true]\n", 1)[1]
+    assert section == "latest=34\nhigh=88\nlow=30\ncharged=55\ndrained=60\n"
+
+
+def test_body_battery_no_data(conn):
+    text = render_activities_summary(conn, DAY, now=NOW)
+    assert text.endswith("[body_battery date=2026-11-08 partial=true]\nstatus=no_data\n")
 
 
 def test_no_workouts_status_line(conn):
@@ -187,14 +214,19 @@ def test_sync_todays_activities_does_not_write_other_days(conn):
     assert result.reached_before_day is True
 
 
-def test_runner_evening_is_activities_only(conn, monkeypatch):
+def test_runner_evening_syncs_activities_and_todays_health_only(conn, monkeypatch):
     calls = []
 
     def fake_sync(*a, **k):
         calls.append("evening")
         return "ok"
 
+    def fake_daily(spec, rlc, clients, c, dates, run_type):
+        calls.append((spec.category, dates, run_type))
+        return "h"
+
     monkeypatch.setattr("garmin_mcp.sync.runner.sync_todays_activities", fake_sync)
+    monkeypatch.setattr("garmin_mcp.sync.runner.sync_daily_category", fake_daily)
     monkeypatch.setattr(
         "garmin_mcp.sync.runner.incremental_sync_activities",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("full activities sync")),
@@ -203,11 +235,31 @@ def test_runner_evening_is_activities_only(conn, monkeypatch):
         "garmin_mcp.sync.runner.incremental_sync",
         lambda *a, **k: (_ for _ in ()).throw(AssertionError("daily category sync")),
     )
-    monkeypatch.setattr("garmin_mcp.sync.runner.build_specs", lambda: [])
 
     out = run_todays_activities_sync(conn, object(), object(), today=DAY)
-    assert out == {"activities": "ok"}
-    assert calls == ["evening"]
+    assert out == {"activities": "ok", "daily_health_metrics": "h"}
+    assert calls == ["evening", ("daily_health_metrics", ["2026-11-08"], "evening_body_battery")]
+
+
+def test_evening_health_fetch_leaves_forward_cursor_alone(conn):
+    from garmin_mcp.sync.cursor import get_cursor
+
+    class Personal(ListPersonal):
+        def get_user_summary(self, cdate):
+            return {"bodyBatteryMostRecentValue": 41, "bodyBatteryHighestValue": 90}
+
+    clients = GarminClients(Personal([]), FakeGarmin())
+    results = run_todays_activities_sync(conn, clients, PassThroughLimiter(), today=DAY)
+
+    assert results["daily_health_metrics"].succeeded == ["2026-11-08"]
+    row = conn.execute(
+        "SELECT body_battery_most_recent, body_battery_highest FROM daily_health_metrics WHERE calendar_date = ?",
+        (DAY.isoformat(),),
+    ).fetchone()
+    assert tuple(row) == (41, 90)
+    assert get_cursor(conn, "daily_health_metrics", "forward") is None
+    run_types = {r[0] for r in conn.execute("SELECT run_type FROM sync_log")}
+    assert "incremental_sync" not in run_types
 
 
 def test_full_run_sync_still_covers_categories(conn, monkeypatch):

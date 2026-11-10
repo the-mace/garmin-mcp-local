@@ -171,12 +171,11 @@ four `launchd` LaunchAgents are provided under `launchd/`:
   excluded by default since a CSV-export seed already covers full activity
   history -- edit the plist's `--category` flags to include it if you
   didn't seed from a CSV export).
-- `local.garmin-mcp.activities-sync` -- daily at 19:00, activities only
-  for the current local calendar day (today's workouts). Emails a separate
-  summary under subject `garmin activities YYYY-MM-DD` when
-  `DAILY_SUMMARY_EMAIL` is set, so the day's workouts are available for
-  planning tomorrow. Does not fetch sleep, health, body composition, or
-  older activities.
+- `local.garmin-mcp.activities-sync` -- daily at 19:00, today's workouts
+  and daily health row (for body battery). Emails a separate summary under
+  subject `garmin activities YYYY-MM-DD` when `DAILY_SUMMARY_EMAIL` is set,
+  so the day's workouts and remaining energy are available for planning
+  tomorrow. Does not fetch sleep, body composition, or older activities.
 - `local.garmin-mcp.watchdog` -- daily at 10:00 and 20:00, catches a
   scheduled run that failed silently (see "Failure alerting" below).
 
@@ -276,8 +275,11 @@ a day with a weigh-in.
 The 19:00 `garmin-mcp-activities-sync` job uses the same
 `DAILY_SUMMARY_EMAIL` recipient but sends a separate message: subject
 `garmin activities YYYY-MM-DD`, body `garmin_activities_summary v1` with
-only that day's workout lines (or `status=no_workouts` when there were
-none). No sleep, health, or prior-day sections.
+that day's workout lines (or `status=no_workouts` when there were none),
+then a `[body_battery date=... partial=true]` section (`latest`, `high`,
+`low`, `charged`, `drained`). The job fetches that day's daily summary for
+it, logged as run type `evening_body_battery` without moving the morning
+sync's cursor. No sleep, other health, or prior-day sections.
 
 ```bash
 garmin-mcp-daily-summary --print              # show today's summary

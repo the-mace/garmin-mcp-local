@@ -15,7 +15,7 @@ from garmin_mcp.sync.activities_sync import (
     sync_todays_activities,
 )
 from garmin_mcp.sync.daily_categories import build_specs
-from garmin_mcp.sync.engine import backfill_batch, incremental_sync
+from garmin_mcp.sync.engine import backfill_batch, incremental_sync, sync_daily_category
 from garmin_mcp.retry import is_transient
 
 
@@ -76,11 +76,21 @@ def run_todays_activities_sync(
     rate_limited_client: RateLimitedClient,
     today: date | None = None,
 ) -> dict:
-    """Evening activities-only sync: fetch and persist workouts that began
-    on the local calendar day. Does not touch sleep, health, or other
-    wellness categories."""
+    """Evening sync: workouts that began on the local calendar day, plus
+    that day's daily health row (for body battery). Sleep and the other
+    wellness categories are left to the morning sync.
+
+    The daily health fetch uses its own run_type and never moves the
+    forward cursor, so the morning incremental sync and the watchdog are
+    unaffected; the morning run re-fetches the day with final totals."""
     today = today or date.today()
-    return {"activities": sync_todays_activities(rate_limited_client, clients, conn, day=today)}
+    health_spec = next(s for s in build_specs() if s.category == "daily_health_metrics")
+    return {
+        "activities": sync_todays_activities(rate_limited_client, clients, conn, day=today),
+        "daily_health_metrics": sync_daily_category(
+            health_spec, rate_limited_client, clients, conn, [today.isoformat()], run_type="evening_body_battery"
+        ),
+    }
 
 
 def sync_needs_retry(results: dict, clients: GarminClients) -> str | None:

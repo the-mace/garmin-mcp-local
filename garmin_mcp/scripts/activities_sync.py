@@ -1,6 +1,6 @@
-"""CLI: evening activities-only sync -- fetch today's workouts, then email
-them under subject "garmin activities YYYY-MM-DD". Does not sync sleep,
-health, or other wellness categories.
+"""CLI: evening sync -- fetch today's workouts and daily health (for body
+battery), then email them under subject "garmin activities YYYY-MM-DD".
+Does not sync sleep or the other wellness categories.
 
 Usage:
     garmin-mcp-activities-sync

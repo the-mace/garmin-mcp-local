@@ -19,7 +19,7 @@
          (see garmin_mcp/config.py), and setting one isn't needed now that
          nothing here goes through /bin/bash. -->
 
-    <!-- Once daily at 19:00 local time: today's activities only, for planning
+    <!-- Once daily at 19:00 local time: today's activities and body battery, for planning
          tomorrow's workouts. Staggered well after the 08:00/08:30 morning
          sync+backfill and before the 20:00 watchdog check. -->
     <key>StartCalendarInterval</key>
