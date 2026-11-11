@@ -1,12 +1,5 @@
-# After CI passes on a Dependabot PR, approve and squash-merge it if it is a
-# patch or minor bump (0.x packages: patch only). Majors are left for review.
-# Human PRs are left alone — branch protection requires 1 review for those.
-# Only dependabot[bot] PRs are approved/merged here (patch/minor per policy; majors manual).
-#
-# Repo settings this relies on:
-# - Actions → Workflow permissions → "Allow GitHub Actions to create and
-#   approve pull requests" (can_approve_pull_request_reviews)
-# - Branch protection: 1 approving review + required check "test"
+# Logic and policy live in the shared workflow:
+# https://github.com/the-mace/workflows (callers pin @main).
 name: Dependabot auto-merge
 
 on:
@@ -21,87 +14,4 @@ permissions:
 
 jobs:
   dependabot:
-    runs-on: ubuntu-latest
-    if: >
-      github.event.workflow_run.conclusion == 'success' &&
-      github.event.workflow_run.event == 'pull_request'
-    steps:
-      - name: Find Dependabot PR for this commit
-        id: pr
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SHA: ${{ github.event.workflow_run.head_sha }}
-          REPO: ${{ github.repository }}
-        run: |
-          pr_json=$(gh api "repos/${REPO}/commits/${SHA}/pulls" \
-            --jq '[.[] | select(.user.login == "dependabot[bot]")] | .[0] // empty')
-          if [ -z "$pr_json" ]; then
-            echo "No Dependabot PR for ${SHA}; nothing to merge."
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          number=$(printf '%s' "$pr_json" | jq -r .number)
-          url=$(printf '%s' "$pr_json" | jq -r .html_url)
-          echo "skip=false" >> "$GITHUB_OUTPUT"
-          echo "number=${number}" >> "$GITHUB_OUTPUT"
-          echo "url=${url}" >> "$GITHUB_OUTPUT"
-          title=$(printf '%s' "$pr_json" | jq -r .title)
-          echo "title=${title}" >> "$GITHUB_OUTPUT"
-          echo "Dependabot PR #${number}: ${url}"
-
-      - name: Classify bump (patch/minor auto; 0.x minor and majors manual)
-        id: bump
-        if: steps.pr.outputs.skip != 'true'
-        env:
-          PR_TITLE: ${{ steps.pr.outputs.title }}
-        run: |
-          # Policy: auto-merge patch and minor bumps once CI passes, except
-          # packages currently on 0.x (minor can break there) stay patch-only.
-          # Majors and unparseable titles (e.g. grouped updates) stay manual.
-          verdict=$(python3 - "$PR_TITLE" <<'EOF'
-          import re, sys
-          m = re.search(r"from\s+[<>=~^!]*\s*v?(\d+(?:\.\d+)*)\s+to\s+[<>=~^!]*\s*v?(\d+(?:\.\d+)*)", sys.argv[1], re.I)
-          if not m:
-              print("manual"); sys.exit()
-          pad = lambda v: (tuple(int(p) for p in v.split(".")) + (0, 0, 0))[:3]
-          old, new = pad(m.group(1)), pad(m.group(2))
-          if old[0] != new[0]:
-              print("manual")
-          elif old[1] == new[1]:
-              print("auto")
-          elif old[0] == 0:
-              print("manual")
-          else:
-              print("auto")
-          EOF
-          )
-          echo "verdict=${verdict}" >> "$GITHUB_OUTPUT"
-          echo "Title: ${PR_TITLE} -> ${verdict}"
-
-      - name: Approve PR
-        if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.verdict == 'auto'
-        run: |
-          if ! gh pr review --approve "$PR_URL"; then
-            echo "::error::Could not approve. Check Actions → Workflow permissions → Allow GitHub Actions to create and approve pull requests."
-            exit 1
-          fi
-        env:
-          PR_URL: ${{ steps.pr.outputs.url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Squash-merge
-        if: steps.pr.outputs.skip != 'true' && steps.bump.outputs.verdict == 'auto'
-        run: |
-          if gh pr merge --squash --delete-branch "$PR_URL"; then
-            echo "Merged."
-            exit 0
-          fi
-          echo "Immediate merge failed; enabling auto-merge..."
-          if gh pr merge --squash --auto --delete-branch "$PR_URL"; then
-            echo "Auto-merge enabled."
-            exit 0
-          fi
-          echo "Could not merge or enable auto-merge (already merged, conflict, or protection)."
-        env:
-          PR_URL: ${{ steps.pr.outputs.url }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    uses: the-mace/workflows/.github/workflows/dependabot-auto-merge.yml@main
