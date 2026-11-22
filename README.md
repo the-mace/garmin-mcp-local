@@ -89,6 +89,13 @@ garmin-mcp-sync
 ```
 
 Pulls everything new since the last successful sync, for every category.
+
+The command lives in `.venv/bin`, which isn't on your PATH. To run it from
+any directory, link the repo's wrapper `bin/garmin-mcp-sync` onto your PATH:
+
+```bash
+ln -sf "$PWD/bin/garmin-mcp-sync" ~/.local/bin/garmin-mcp-sync
+```
 This is **never** triggered automatically by a query -- run it explicitly,
 or wire it into a cron job / the MCP `sync_now` tool.
 

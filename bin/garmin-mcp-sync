@@ -1,0 +1,6 @@
+#!/bin/bash
+# Runs the venv's garmin-mcp-sync from anywhere. readlink -f follows the
+# ~/.local/bin symlink back to the repo so the venv path resolves.
+set -euo pipefail
+repo="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+exec "$repo/.venv/bin/garmin-mcp-sync" "$@"

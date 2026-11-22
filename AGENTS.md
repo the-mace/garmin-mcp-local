@@ -26,6 +26,8 @@ just this one. Here, use `garmin_mcp/retry.py` (`is_transient`,
 - The default branch is `master`, not `main`.
 - After a pull that touches `pyproject.toml`:
   `source .venv/bin/activate && pip install -e ".[dev]"`.
+- `bin/garmin-mcp-sync` wraps `.venv/bin/garmin-mcp-sync` so it runs from any
+  directory (Rob symlinks it into `~/.local/bin`).
 - Tests: `pytest` (idempotency, rate limiter, monitoring, official API and FIT
   laps, daily summary, evening activities sync, retries). Setup, launchd jobs, and
   architecture are in `README.md`.
