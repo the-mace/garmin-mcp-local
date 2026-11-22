@@ -32,9 +32,9 @@ def main() -> None:
         raise
 
 
-def _run() -> None:
-    config = get_config()
-    conn = init_db(config.db_path)
+def sync_with_retries(conn, config):
+    """Run one full incremental sync with the run-level retry; shared with
+    the watchdog's pre-alert re-sync. Returns (results, clients)."""
     # Only prompt for an MFA code if there's actually a terminal attached
     # (e.g. a scheduled/launchd run has none) -- otherwise input() would
     # hang or raise an unhelpful EOFError instead of the clear "run this
@@ -54,13 +54,19 @@ def _run() -> None:
 
     # Each call is already retried; this re-runs the whole (idempotent) sync
     # a few minutes later when a Garmin outage outlasted those retries.
-    results, clients = run_with_retries(
+    return run_with_retries(
         attempt,
         label="garmin-mcp-sync",
         retries=config.run_retries,
         delay_seconds=config.run_retry_delay_seconds,
         needs_retry=lambda outcome: sync_needs_retry(*outcome),
     )
+
+
+def _run() -> None:
+    config = get_config()
+    conn = init_db(config.db_path)
+    results, clients = sync_with_retries(conn, config)
 
     for category, result in results.items():
         print(f"[{category}] {result}")

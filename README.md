@@ -253,7 +253,10 @@ is the alert itself, sent only when there's actually something to report.
   It also flags a stalled Garmin Connect upload. If there's still no
   sleep data for last night after the sync, the phone app has usually
   stopped syncing the watch in the background, even though every sync
-  run succeeded. (A night without the watch on triggers it too.)
+  run succeeded. (A night without the watch on triggers it too.) Before
+  alerting on that, the watchdog runs one more incremental sync (no
+  summary email), so waking up after the 08:00 sync doesn't alert as
+  long as the watch has uploaded by the 10:00 check.
 
 Leaving `ALERT_EMAIL_TO` unset disables alerting entirely (failures are
 still visible in `logs/*.error.log` and `sync_log`, just not pushed to

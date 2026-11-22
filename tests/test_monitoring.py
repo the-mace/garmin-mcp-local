@@ -209,3 +209,41 @@ def test_connect_upload_ok_when_last_night_has_sleep(conn):
     upsert(conn, "sleep", {"calendar_date": "2026-07-14", "deep_sleep_s": 3600, "source": "api"}, ["calendar_date"])
 
     assert check_connect_upload(conn, today=date(2026, 7, 14)) == []
+
+
+def test_watchdog_resyncs_when_last_night_sleep_missing(conn):
+    from garmin_mcp.scripts.watchdog import resync_if_sleep_missing
+
+    calls = []
+
+    def fake_sync(c, config):
+        calls.append(config)
+        upsert(c, "sleep", {"calendar_date": date.today().isoformat(), "deep_sleep_s": 3600, "source": "api"}, ["calendar_date"])
+        return {}, None
+
+    assert resync_if_sleep_missing(conn, "cfg", sync=fake_sync) == []
+    assert calls == ["cfg"]
+    assert check_connect_upload(conn) == []
+
+
+def test_watchdog_skips_resync_when_sleep_present(conn):
+    from garmin_mcp.scripts.watchdog import resync_if_sleep_missing
+
+    upsert(conn, "sleep", {"calendar_date": date.today().isoformat(), "deep_sleep_s": 3600, "source": "api"}, ["calendar_date"])
+
+    def fake_sync(c, config):
+        raise AssertionError("should not sync")
+
+    assert resync_if_sleep_missing(conn, "cfg", sync=fake_sync) == []
+
+
+def test_watchdog_resync_crash_is_an_issue_not_a_crash(conn):
+    from garmin_mcp.scripts.watchdog import resync_if_sleep_missing
+
+    def fake_sync(c, config):
+        raise RuntimeError("garmin down")
+
+    issues = resync_if_sleep_missing(conn, "cfg", sync=fake_sync)
+
+    assert [(i.category, i.problem) for i in issues] == [("resync", "failed")]
+    assert "garmin down" in issues[0].detail
